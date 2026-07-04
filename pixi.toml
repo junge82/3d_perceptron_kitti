@@ -1,0 +1,48 @@
+[workspace]
+name = "kitti-3d-perception-pipeline"
+channels = ["robostack-jazzy", "conda-forge"]
+platforms = ["linux-64", "win-64", "osx-64", "osx-arm64"]
+
+# 1. Update the virtual requirement to match PyTorch 2.5+'s requirements
+[system-requirements]
+cuda = "12.6"
+
+[dependencies]
+# ROS 2 Core & Messages
+ros-jazzy-desktop = "*"
+ros-jazzy-sensor-msgs = "*"
+ros-jazzy-sensor-msgs-py = "*"
+ros-jazzy-cv-bridge = ">=4.1.0,<5"
+ros-jazzy-tf2-ros = "*"
+ros-jazzy-tf2-geometry-msgs = "*"
+ros-jazzy-robot-state-publisher = "*"
+ros-jazzy-xacro = ">=2.1.1,<3"
+
+# ROS 2 Build Tools
+colcon-ros = ">=0.5.0,<0.6"
+colcon-common-extensions = ">=0.3.0,<0.4"
+
+# Cross-platform dependencies
+ultralytics = "*"
+open3d = "*"
+numpy = "*"
+opencv = ">=4.12.0,<5"
+torchvision = "=0.25"
+ros-jazzy-rosbag2 = ">=0.26.9,<0.27"
+ros-jazzy-rosbag2-storage-mcap = ">=0.26.9,<0.27"
+ros-jazzy-joint-state-publisher = ">=2.4.1,<3"
+ros-jazzy-joint-state-publisher-gui = ">=2.4.1,<3"
+
+# 2. Let conda-forge handle modern CUDA bindings automatically via pytorch-gpu
+[target.linux-64.dependencies]
+pytorch-gpu = ">=2.5.1"
+
+[target.win-64.dependencies]
+pytorch-gpu = ">=2.5.1"
+
+# 3. Standard CPU versions for Mac hardware
+[target.osx-64.dependencies]
+pytorch = ">=2.5.1"
+
+[target.osx-arm64.dependencies]
+pytorch = ">=2.5.1"
