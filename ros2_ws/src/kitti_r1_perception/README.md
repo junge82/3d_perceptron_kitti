@@ -1,6 +1,10 @@
 # kitti_r1_perception
 
-This package provides a modular 3D perception pipeline for the SHL-1 robot.
+This package provides a modular 3D perception pipeline for the KITTI robot.
+
+# Vision Messages 
+
+git clone -b jazzy https://github.com/ros-perception/vision_msgs.git
 
 ## Nodes
 

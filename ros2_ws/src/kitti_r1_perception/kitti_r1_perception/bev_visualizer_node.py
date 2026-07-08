@@ -12,8 +12,8 @@ class BEVVisualizerNode(Node):
         super().__init__('bev_visualizer_node')
         
         # BEV Parameters
-        self.declare_parameter('range_x', 20.0) # +/- 10m
-        self.declare_parameter('range_y', 20.0) # +/- 10m
+        self.declare_parameter('range_x', 15.0) # +/- 10m
+        self.declare_parameter('range_y', 15.0) # +/- 10m
         self.declare_parameter('resolution', 0.05) # 5cm/pixel
         
         self.range_x = self.get_parameter('range_x').value

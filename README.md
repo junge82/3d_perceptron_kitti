@@ -4,10 +4,10 @@
 # KITTI 3D Perception Pipeline
 This is the accompanying repository for the '𝗠𝗼𝘃𝗶𝗻𝗴 𝗳𝗿𝗼𝗺 𝟮𝗗 𝘁𝗼 𝟯𝗗: 𝗕𝘂𝗶𝗹𝗱𝗶𝗻𝗴 𝗮 𝗟𝗶𝗗𝗔𝗥-𝗖𝗮𝗺𝗲𝗿𝗮 𝗙𝘂𝘀𝗶𝗼𝗻 𝗣𝗶𝗽𝗲𝗹𝗶𝗻𝗲 𝗶𝗻 𝗥𝗢𝗦 𝟮' 
 
-The workspace contains a ROS 2 Jazzy 3D perception pipeline developed for the SHL-1 robot.
+The workspace contains a ROS 2 Jazzy 3D perception pipeline developed for the KITTI robot.
 The system processes Lidar point clouds and camera images to provide fused 3D object detections and a Bird's-Eye-View (BEV) visualization.
 
-
+- '/kitti/velodyne/pointcloud',
 
 ## Prerequisites
 
@@ -53,3 +53,15 @@ ros2 bag play <your_bag_file> --clock
 
 - velodyne_viewer.py
 - kitti_calib_projection.py
+
+## Pixi Comands
+
+pixi shell
+
+pixi install / pixi update
+
+pixi run
+
+pixi run test-gpu
+
+changelog: pixi upgrade to open3d support

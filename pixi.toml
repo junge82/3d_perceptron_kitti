@@ -1,11 +1,12 @@
 [workspace]
 name = "kitti-3d-perception-pipeline"
 channels = ["robostack-jazzy", "conda-forge"]
-platforms = ["linux-64", "win-64", "osx-64", "osx-arm64"]
+platforms = ["linux-64", "win-64"]
 
 # 1. Update the virtual requirement to match PyTorch 2.5+'s requirements
 [system-requirements]
 cuda = "12.6"
+libc = "2.31"  # 👈 ADD THIS LINE TO ALLOW MANYLINUX_2_31 WHEELS
 
 [dependencies]
 # ROS 2 Core & Messages
@@ -24,7 +25,6 @@ colcon-common-extensions = ">=0.3.0,<0.4"
 
 # Cross-platform dependencies
 ultralytics = "*"
-open3d = "*"
 numpy = "*"
 opencv = ">=4.12.0,<5"
 torchvision = "=0.25"
@@ -40,9 +40,13 @@ pytorch-gpu = ">=2.5.1"
 [target.win-64.dependencies]
 pytorch-gpu = ">=2.5.1"
 
-# 3. Standard CPU versions for Mac hardware
-[target.osx-64.dependencies]
-pytorch = ">=2.5.1"
+# 4. Use PyPI wheels on Linux and Windows to enable CUDA support
+[target.linux-64.pypi-dependencies]
+open3d = "*"
 
-[target.osx-arm64.dependencies]
-pytorch = ">=2.5.1"
+[target.win-64.pypi-dependencies]
+open3d = "*"
+
+# 5. Quick GPU test tasks
+[tasks]
+test-gpu = { cmd = "python -c \"import open3d as o3d; print('Open3D CUDA available:', o3d.core.cuda.is_available() if hasattr(o3d, 'core') else 'Check open3d.core'); import torch; print('PyTorch CUDA available:', torch.cuda.is_available())\"" }
