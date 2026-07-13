@@ -82,8 +82,8 @@ def generate_launch_description():
     return LaunchDescription([
         robot_state_publisher,
         lidar_node,
-        camera_node,
-        fusion_node,
-        bev_node,
+        # camera_node,
+        # fusion_node,
+        # bev_node,
         rviz_node
     ])
