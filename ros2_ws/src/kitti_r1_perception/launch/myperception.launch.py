@@ -109,8 +109,8 @@ def generate_launch_description():
     return LaunchDescription([   
         lidar_node,
         camera_node,
-        # fusion_node,
-        # bev_node,
+        fusion_node,
+        #bev_node,
         tf,
         tf_camera,
         rviz_node
