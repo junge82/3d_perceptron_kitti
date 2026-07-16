@@ -50,9 +50,12 @@ class LidarClusterNode(Node):
         self.cluster_pub = self.create_publisher(Detection3DArray, '/detection/lidar_clusters', lidar_qos)
         self.no_ground_pub = self.create_publisher(PointCloud2, '/lidar/points_no_ground', lidar_qos)
         
-        self.get_logger().info('Multi-Threaded Lidar Cluster Node Initialized with Split Profiling.')
+        # Configure native Open3D device context targeting your RTX 4060
+        self.device = o3d.core.Device("CUDA:0")
+        self.get_logger().info('Multi-Threaded Lidar Cluster Node Initialized with RTX 4060 GPU Acceleration.')
 
     def listener_callback(self, msg):
+        # Start total callback tracking timer
         node_start_time = time.perf_counter()
 
         # Extract current simulation timeline clock
@@ -60,14 +63,15 @@ class LidarClusterNode(Node):
         msg_stamp = rclpy.time.Time.from_msg(msg.header.stamp, clock_type=rclpy.time.ClockType.ROS_TIME)
         data_age_ms = (now - msg_stamp).nanoseconds / 1e6
 
-        # 1. Fast Vectorized Zero-Copy Byte Conversion
+        # 1. Fast Vectorized Zero-Copy Byte Conversion (CPU to NumPy)
+        conversion_start = time.perf_counter()
         points = self.fast_pointcloud2_to_numpy(msg)
+        conversion_time_ms = (time.perf_counter() - conversion_start) * 1000.0
+        
         if points.size == 0:
             return
         
-        # ----------------------------------------------------------------------
-        # FIXED: Corrected KITTI ROI Window Filter (X=Forward, Y=Lateral, Z=Height)
-        # ----------------------------------------------------------------------
+        # 2. Vectorized ROI Box Filter (X=Forward, Y=Lateral, Z=Height)
         roi_start = time.perf_counter()
         roi_mask = (
             (points[:, 0] >= 1.5)   & (points[:, 0] <= 50.0) &  # X is FORWARD (1.5m to 50m ahead)
@@ -80,40 +84,54 @@ class LidarClusterNode(Node):
         if points.size == 0:
             return
         
-        # 2. Setup Open3D and Downsample
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(points)
-        pcd_down = pcd.voxel_down_sample(voxel_size=self.voxel_size)
+        # ----------------------------------------------------------------------
+        # ⚡ GPU OFFLOAD: Instantly map arrays to RTX 4060 VRAM
+        # ----------------------------------------------------------------------
+        gpu_upload_start = time.perf_counter()
+        o3d_points = o3d.core.Tensor(points, dtype=o3d.core.float32, device=self.device)
+        pcd_gpu = o3d.t.geometry.PointCloud(o3d_points)
+        upload_time_ms = (time.perf_counter() - gpu_upload_start) * 1000.0
 
-        # 3. Fast RANSAC Ground Segmentation
-        if len(pcd_down.points) < self.min_cluster:
+        # 3. GPU Voxel Downsampling
+        pcd_down = pcd_gpu.voxel_down_sample(voxel_size=self.voxel_size)
+
+        # 4. GPU RANSAC Ground Segmentation
+        if len(pcd_down.point.positions) < self.min_cluster:
             return
 
         ransac_start = time.perf_counter()
-        plane_model, inliers = pcd_down.segment_plane(distance_threshold=self.ground_dist,
-                                                     ransac_n=3,
-                                                     num_iterations=30) # Dropped to 30 for speed
+        plane_model, inliers_indices = pcd_down.segment_plane(distance_threshold=self.ground_dist,
+                                                              ransac_n=3,
+                                                              num_iterations=30)
         
-        pcd_no_ground = pcd_down.select_by_index(inliers, invert=True)
-        no_ground_pts = np.asarray(pcd_no_ground.points)
+        # FIXED API: Use select_by_index() instead of select_by_mask() to match Int64 types natively
+        pcd_no_ground = pcd_down.select_by_index(inliers_indices, invert=True)
         ransac_time_ms = (time.perf_counter() - ransac_start) * 1000.0
         
-        if no_ground_pts.size == 0:
+        if len(pcd_no_ground.point.positions) == 0:
             return
 
-        # 4. Euclidean DBSCAN Clustering (Now processing significantly fewer points)
+        # 5. GPU Parallel DBSCAN Clustering
         dbscan_start = time.perf_counter()
-        labels = np.array(pcd_no_ground.cluster_dbscan(eps=self.cluster_tol, min_points=self.min_cluster, print_progress=False))
+        labels_tensor = pcd_no_ground.cluster_dbscan(eps=self.cluster_tol, min_points=self.min_cluster)
         dbscan_time_ms = (time.perf_counter() - dbscan_start) * 1000.0
         
+        # ----------------------------------------------------------------------
+        # HOST RETRIEVAL: Pull results back to CPU for ROS layout packaging
+        # ----------------------------------------------------------------------
+        labels = labels_tensor.cpu().numpy()
+        no_ground_pts = pcd_no_ground.point.positions.cpu().numpy()
+
         max_label = labels.max() if labels.size > 0 else -1
         if max_label < 0:
             return
 
-        # 5. Parallel Vector Center/Extent Processing via Numpy
+        # 6. Parallel Vector Center/Extent Processing via Numpy
         loop_start = time.perf_counter()
         detections = Detection3DArray()
         detections.header = msg.header
+        if not detections.header.frame_id:
+            detections.header.frame_id = "velodyne"
         
         for i in range(max_label + 1):
             cluster_mask = (labels == i)
@@ -129,7 +147,7 @@ class LidarClusterNode(Node):
             extent = max_bound - min_bound
             
             detection = Detection3D()
-            detection.header = msg.header
+            detection.header = detections.header
 
             hypothesis = ObjectHypothesisWithPose()
             hp = ObjectHypothesis()
@@ -163,38 +181,33 @@ class LidarClusterNode(Node):
         self.cluster_pub.publish(detections)
         
         # Publish Debug Cloud
-        no_ground_msg = point_cloud2.create_cloud_xyz32(msg.header, no_ground_pts)
+        no_ground_msg = point_cloud2.create_cloud_xyz32(detections.header, no_ground_pts)
         self.no_ground_pub.publish(no_ground_msg)
 
         node_time_ms = (time.perf_counter() - node_start_time) * 1000.0
         num_clusters = len(detections.detections)
 
-        # Log detailed execution breakdown
+        # Log complete GPU performance metrics profile
         self.get_logger().info(
-            f"\n--- LIDAR PROFILING BREAKDOWN ---\n"
+            f"\n--- RTX 4060 GPU LIDAR PROFILING BREAKDOWN ---\n"
             f"Generated Clusters  : {num_clusters}\n"
             f"Pre-Callback Age    : {data_age_ms:.2f}ms\n"
-            f"NumPy ROI Window Filter: {roi_time_ms:.2f}ms\n"
-            f"RANSAC Ground Plane : {ransac_time_ms:.2f}ms\n"
-            f"DBSCAN Clustering   : {dbscan_time_ms:.2f}ms\n"
+            f"Numpy Byte Slice    : {conversion_time_ms:.2f}ms\n"
+            f"NumPy ROI Filter    : {roi_time_ms:.2f}ms\n"
+            f"GPU VRAM Upload Cost: {upload_time_ms:.2f}ms\n"
+            f"GPU CUDA RANSAC Cost: {ransac_time_ms:.2f}ms\n"
+            f"GPU CUDA DBSCAN Cost: {dbscan_time_ms:.2f}ms\n"
             f"ROS Message Loop    : {msg_loop_time_ms:.2f}ms\n"
             f"Total Callback Cost : {node_time_ms:.2f}ms"
         )
 
     def fast_pointcloud2_to_numpy(self, msg):
         """ Zero-copy memory view slicing. Skips generators entirely. """
-        # Extract raw byte buffer array
         data_arr = np.frombuffer(msg.data, dtype=np.uint8)
-        
-        # Parse byte structural parameters
-        row_step = msg.row_step
         point_step = msg.point_step
-        
-        # Reshape to easily slice fields out via item steps
         num_points = (msg.height * msg.width)
         reshaped = data_arr.reshape(num_points, point_step)
         
-        # Pull offsets for x, y, z fields (Assuming typical float32 layouts: x=0, y=4, z=8)
         x_pts = reshaped[:, 0:4].view(dtype=np.float32)
         y_pts = reshaped[:, 4:8].view(dtype=np.float32)
         z_pts = reshaped[:, 8:12].view(dtype=np.float32)
@@ -206,8 +219,6 @@ def main(args=None):
     rclpy.init(args=args)
     node = LidarClusterNode()
 
-    # 4. Initialize the MultiThreadedExecutor
-    # It automatically detects your CPU core count and provisions an optimal thread pool
     executor = MultiThreadedExecutor()
     executor.add_node(node)
 

@@ -65,3 +65,11 @@ pixi run
 pixi run test-gpu
 
 changelog: pixi upgrade to open3d support
+
+
+# Title: Coordinate systems
+https://mmdetection3d.readthedocs.io/en/v1.0.0rc1/tutorials/coord_sys_tutorial.html
+
+# Kitti sources: 
+- https://colab.research.google.com/github/itberrios/CV_tracking/blob/main/kitti_tracker/1_kitti_object_detection_lidar.ipynb#scrollTo=YgHXWJHwpU4U
+- https://www.cvlibs.net/publications/Geiger2013IJRR.pdf
