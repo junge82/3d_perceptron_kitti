@@ -1,42 +1,42 @@
 import rclpy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy # Zero-Backlog QoSProfile
 from sensor_msgs.msg import Image
 from vision_msgs.msg import Detection2DArray, Detection2D, ObjectHypothesisWithPose
 from cv_bridge import CvBridge
 from ultralytics import YOLO
 import cv2
 import torch
-import time  # High-precision CPU timer for profiling
+import time
+import os
+import matplotlib.pyplot as plt
+import numpy as np
+
+# METHOD 3: Import the ament index tracking utility for dynamic path resolution
+from ament_index_python.packages import get_package_share_directory
 
 class CameraDetectorNode(Node):
     def __init__(self):
         super().__init__('camera_detector_node')
         
-        # 1. Create a Reentrant Callback Group
-        # This allows multiple callbacks in this node to run concurrently on different threads
         self.callback_group = MutuallyExclusiveCallbackGroup()
 
         # Parameters
-        self.declare_parameter('model_version', 'yolov8n') # Options: yolov8n, yolo11n
+        self.declare_parameter('model_version', 'yolov8n') 
         self.declare_parameter('conf_threshold', 0.25)
         
         model_ver = self.get_parameter('model_version').value
         self.conf_threshold = self.get_parameter('conf_threshold').value
         
-        # Load model (downloads if not present)
         model_path = f"{model_ver}.pt"
-        # Choose device (GPU if available)
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         print(f"Using device: {self.device}")
         self.model = YOLO(model_path)
         
-        # Check if true CUDA sync timing is needed
         self.is_cuda = (self.device == 'cuda')
         
-        # Move model to device if supported
         try:
             self.model.to(self.device)
         except Exception:
@@ -45,11 +45,22 @@ class CameraDetectorNode(Node):
         
         self.bridge = CvBridge()
 
-        # Create a real-time, low-latency QoS configuration
+        # Latency lists for post-run distribution plotting
+        self.inference_latencies = []
+        self.total_latencies = []
+
+        # METHOD 3: Dynamically target the package install share workspace directory
+        try:
+            self.package_share_dir = get_package_share_directory('kitti_r1_perception')
+            self.get_logger().info(f"Resolved package share path: {self.package_share_dir}")
+        except Exception as e:
+            self.package_share_dir = os.getcwd()
+            self.get_logger().warn(f"Failed to resolve package share. Falling back to CWD: {self.package_share_dir}")
+
         realtime_qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE, # Don't block for missing frames
+            reliability=ReliabilityPolicy.RELIABLE, 
             history=HistoryPolicy.KEEP_LAST,
-            depth=1 # IMMEDIATELY drop old images if the callback is busy
+            depth=1 
         )
         
         # Subscription
@@ -58,7 +69,7 @@ class CameraDetectorNode(Node):
             '/kitti/camera_left/image_raw',
             self.listener_callback,
             realtime_qos,
-            callback_group=self.callback_group # CRITICAL: Ensures callback isolation for multi-threaded execution
+            callback_group=self.callback_group
         )
  
         # Publishers
@@ -67,17 +78,12 @@ class CameraDetectorNode(Node):
         self.get_logger().info(f'Camera Detector Node started with model: {model_path}')
 
     def listener_callback(self, msg):
-        # Start total callback latency timer
         node_start_time = time.perf_counter()
 
-        # Extract current simulation timeline clock safely using ROS_TIME configuration (FIXED .stamp layout)
         now = self.get_clock().now()
         msg_stamp = rclpy.time.Time.from_msg(msg.header.stamp, clock_type=rclpy.time.ClockType.ROS_TIME)
-        
-        # Calculate pre-existing data age before execution starts
         data_age_ms = (now - msg_stamp).nanoseconds / 1e6
 
-        # Live-update parameters from the ROS 2 server
         self.conf_threshold = self.get_parameter('conf_threshold').value
 
         # 1. Convert ROS Image to OpenCV
@@ -87,38 +93,44 @@ class CameraDetectorNode(Node):
             self.get_logger().error(f'Could not convert image: {e}')
             return
 
-        # 2. Run Inference (Profile precise execution isolation)
+        # 2. Run Inference
         inference_start = time.perf_counter()
         results = self.model.predict(cv_image, conf=self.conf_threshold, verbose=False, device=self.device)
         
         if self.is_cuda:
-            torch.cuda.synchronize()  # Force execution pipeline finish to avoid asynchronous skewing
+            torch.cuda.synchronize()  
         inference_time_ms = (time.perf_counter() - inference_start) * 1000.0
+
+        # Save metrics for our distribution curves
+        self.inference_latencies.append(inference_time_ms)
 
         # Prepare Detection2DArray
         detections = Detection2DArray()
         detections.header = msg.header
         
-        for result in results:
-            for box in result.boxes:
-                # Extract box coordinates (FIXED raw tensor access safely)
-                xywh = box.xywh[0].cpu().numpy()
-                cls_id = int(box.cls[0].cpu().item())
-                conf = float(box.conf[0].cpu().item())
-                
+        # Track if we have active targets
+        has_boxes = len(results) > 0 and len(results[0].boxes) > 0
+
+        # 3. CPU Offload: Extract bulk tensors directly from GPU to avoid nested iterations
+        if has_boxes:
+            boxes = results[0].boxes
+            xywh_all = boxes.xywh.cpu().numpy()
+            cls_all = boxes.cls.cpu().numpy().astype(int)
+            conf_all = boxes.conf.cpu().numpy()
+
+            for idx in range(len(xywh_all)):
                 detection = Detection2D()
                 detection.header = msg.header
                 
-                # Bounding box
-                detection.bbox.center.position.x = float(xywh[0])
-                detection.bbox.center.position.y = float(xywh[1])
-                detection.bbox.size_x = float(xywh[2])
-                detection.bbox.size_y = float(xywh[3])
+                # Assign values directly from the bulk matrices
+                detection.bbox.center.position.x = float(xywh_all[idx, 0])
+                detection.bbox.center.position.y = float(xywh_all[idx, 1])
+                detection.bbox.size_x = float(xywh_all[idx, 2])
+                detection.bbox.size_y = float(xywh_all[idx, 3])
                 
-                # Hypothesis
                 hypothesis = ObjectHypothesisWithPose()
-                hypothesis.hypothesis.class_id = self.class_names[cls_id]
-                hypothesis.hypothesis.score = conf
+                hypothesis.hypothesis.class_id = self.class_names[cls_all[idx]]
+                hypothesis.hypothesis.score = float(conf_all[idx])
                 detection.results.append(hypothesis)
                 
                 detections.detections.append(detection)
@@ -126,21 +138,25 @@ class CameraDetectorNode(Node):
         # Publish results
         self.detection_pub.publish(detections)
         
-        # --- Visualize and Publish the results (FIXED array references) ---
-        if len(results) > 0:
-            try:
+        # 4. FIXED VISUALIZATION: Safe unconditional plotting with empty detection guard
+        try:
+            if has_boxes:
+                # Render detected overlay tracking masks
                 annotated_frame = results[0].plot()
-                annotated_msg = self.bridge.cv2_to_imgmsg(annotated_frame, "bgr8")
-                annotated_msg.header = msg.header
-                self.annotated_pub.publish(annotated_msg)
-            except Exception as e:
-                self.get_logger().error(f'Failed to convert and publish annotated image: {e}')
+            else:
+                # Safe Fallback: Publish the raw input image if zero targets exist
+                annotated_frame = cv_image
+                
+            annotated_msg = self.bridge.cv2_to_imgmsg(annotated_frame, "bgr8")
+            annotated_msg.header = msg.header
+            self.annotated_pub.publish(annotated_msg)
+        except Exception as e:
+            self.get_logger().error(f'Failed to convert annotated image: {e}')
 
-        # Finish total node computation metric tracking
         node_time_ms = (time.perf_counter() - node_start_time) * 1000.0
+        self.total_latencies.append(node_time_ms)
         num_detections = len(detections.detections)
 
-        # Output detailed execution performance layout
         self.get_logger().info(
             f"\n--- CAMERA PERFORMANCE PROFILE ---\n"
             f"Detected Objects    : {num_detections}\n"
@@ -148,6 +164,32 @@ class CameraDetectorNode(Node):
             f"Pure YOLO Inference : {inference_time_ms:.2f}ms\n"
             f"Total Callback Cost : {node_time_ms:.2f}ms"
         )
+
+    def save_latency_distribution_plot(self):
+        """ METHOD 3: Saves a latency histogram plot inside the dynamic package folder """
+        if not self.total_latencies:
+            return
+            
+        plt.figure(figsize=(10, 6))
+        plt.hist(self.inference_latencies, bins=20, alpha=0.6, label='Pure YOLO Inference Time', color='g')
+        plt.hist(self.total_latencies, bins=20, alpha=0.6, label='Total Callback Cost', color='b')
+        plt.axvline(np.mean(self.total_latencies), color='r', linestyle='dashed', linewidth=2, 
+                    label=f'Mean Callback ({np.mean(self.total_latencies):.2f}ms)')
+        
+        plt.title('Camera Node Latency Distribution Over Time')
+        plt.xlabel('Execution Latency (milliseconds)')
+        plt.ylabel('Frequency (Frames)')
+        plt.legend(loc='upper right')
+        plt.grid(True, alpha=0.3)
+        
+        # Assemble path: install/kitti_r1_perception/share/kitti_r1_perception/perf_logs/camera_latency_distribution.png
+        log_dir = os.path.join(self.package_share_dir, 'perf_logs')
+        os.makedirs(log_dir, exist_ok=True)
+        plot_path = os.path.join(log_dir, 'camera_latency_distribution.png')
+        
+        plt.savefig(plot_path)
+        plt.close()
+        self.get_logger().info(f"\n[PERF DATA LOG] Latency distribution graph successfully saved to: {plot_path}\n")
 
 
 def main(args=None):
@@ -162,6 +204,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.save_latency_distribution_plot()
         node.destroy_node()
         rclpy.shutdown()
 

@@ -59,6 +59,7 @@ def generate_launch_description():
         executable='frustum_fusion_node',
         name='frustum_fusion_node',
         output='screen',
+        emulate_tty=True,
         parameters=[sim_time_param]
     )
 
