@@ -1,5 +1,8 @@
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from vision_msgs.msg import Detection3DArray, Detection2DArray, ObjectHypothesisWithPose
 import numpy as np
 import message_filters
@@ -17,7 +20,7 @@ class FrustumFusionNode(Node):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.get_logger().info(f'Using device: {self.device}')
 
-        # Create CUDA Events for precise GPU benchmarking (ignored seamlessly if using CPU)
+        # CUDA Events for precise GPU benchmarking
         self.is_cuda = self.device.type == 'cuda'
         if self.is_cuda:
             self.start_event = torch.cuda.Event(enable_timing=True)
@@ -42,18 +45,38 @@ class FrustumFusionNode(Node):
         self.R_tensor = torch.from_numpy(T_lidar_to_cam_np[:3, :3]).to(self.device)
         self.t_tensor = torch.from_numpy(T_lidar_to_cam_np[:3, 3]).to(self.device)
 
+        # Explicitly configure a Reliable, Low-Backlog profile to bypass compatibility silos
+        optimized_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT, # Ensures compatibility with default nodes
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1 # Drops old messages locally to eliminate transport delay
+        )
+
+        # 1. Create a Reentrant Callback Group
+        self.callback_group = MutuallyExclusiveCallbackGroup()
+
         # Synchronized Subscriptions
-        self.lidar_sub = message_filters.Subscriber(self, Detection3DArray, '/detection/lidar_clusters')
-        self.camera_sub = message_filters.Subscriber(self, Detection2DArray, '/detection/camera_2d')
+        self.lidar_sub = message_filters.Subscriber(self, Detection3DArray, '/detection/lidar_clusters',
+                                                    qos_profile=optimized_qos,
+                                                    callback_group=self.callback_group) # CRITICAL: Ensures callback isolation for multi-threaded execution
+
+        self.camera_sub = message_filters.Subscriber(self, Detection2DArray, '/detection/camera_2d',
+                                                     qos_profile=optimized_qos, 
+                                                     callback_group=self.callback_group) # CRITICAL: Ensures callback isolation for multi-threaded execution
         
-        self.sync = message_filters.ApproximateTimeSynchronizer([self.lidar_sub, self.camera_sub], queue_size=2, slop=0.05)
+        # INCREASE queue_size here to allow the synchronizer to pair messages successfully
+        self.sync = message_filters.ApproximateTimeSynchronizer(
+            [self.lidar_sub, self.camera_sub], 
+            queue_size=15, # Reverted to a healthy matching pool
+            slop=0.05
+        )
         self.sync.registerCallback(self.fused_callback)
 
         self.fused_pub = self.create_publisher(Detection3DArray, '/detection/fused_3d', 2)
-        self.get_logger().info('Frustum Fusion Node with CUDA-aware performance tracking started.')
+        self.get_logger().info('Frustum Fusion Node with CUDA-aware performance tracking with E2E Age Tracking started.')
 
     def fused_callback(self, lidar_msg, camera_msg):
-        # Start overall callback CPU timer
+        # Start callback CPU timer
         callback_start_time = time.perf_counter()
 
         self.match_radius = self.get_parameter('match_radius').value
@@ -64,7 +87,7 @@ class FrustumFusionNode(Node):
             return
 
         # ----------------------------------------------------
-        # START METRIC: GPU Calculations Boundary
+        # GPU Calculations Boundary
         # ----------------------------------------------------
         if self.is_cuda:
             self.start_event.record()
@@ -101,7 +124,7 @@ class FrustumFusionNode(Node):
         dist_matrix = torch.norm(diff, dim=2) 
         min_dists, best_2d_indices = torch.min(dist_matrix, dim=1)
 
-        # Bring tracking configurations back to host space (FIXED: valid_indices[0] used for tuple extraction)
+        # Bring tracking configurations back to host space
         min_dists_cpu = min_dists.cpu().numpy()
         best_2d_indices_cpu = best_2d_indices.cpu().numpy()
         valid_indices_cpu = valid_indices[0].cpu().numpy()
@@ -116,7 +139,7 @@ class FrustumFusionNode(Node):
         else:
             gpu_time_ms = (time.perf_counter() - gpu_start_cpu_fallback) * 1000.0
 
-        # 7. Construct final fused message (FIXED API assignments)
+        # 7. Construct final fused message
         fused_detections = Detection3DArray()
         fused_detections.header = lidar_msg.header
 
@@ -147,22 +170,52 @@ class FrustumFusionNode(Node):
         if len(fused_detections.detections) > 0:
             self.fused_pub.publish(fused_detections)
 
-        # End overall callback CPU timer
+        # ----------------------------------------------------
+        # LATENCY & AGE CALCULATIONS
+        # ----------------------------------------------------
+        # 1. Total time inside this specific node callback
         callback_time_ms = (time.perf_counter() - callback_start_time) * 1000.0
 
-        # Report latencies
+        # 2. Extract accurate ROS system clock time at the moment of publishing
+        now = self.get_clock().now()
+
+        # 3. Convert message header timestamps to rclpy Time objects
+        lidar_stamp = rclpy.time.Time.from_msg(lidar_msg.header.stamp, 
+            clock_type=rclpy.time.ClockType.ROS_TIME)
+        camera_stamp = rclpy.time.Time.from_msg(camera_msg.header.stamp, 
+            clock_type=rclpy.time.ClockType.ROS_TIME)
+
+        # 4. Calculate total E2E processing age (Sensor Capture -> Node Finished)
+        lidar_e2e_age_ms = (now - lidar_stamp).nanoseconds / 1e6
+        camera_e2e_age_ms = (now - camera_stamp).nanoseconds / 1e6
+
+        # 5. Measure the synchronization shift between the two sensor packets
+        sync_slop_ms = abs((lidar_stamp - camera_stamp).nanoseconds / 1e6)
+
+        # Print all metrics clearly categorized
         self.get_logger().info(
-            f"[PERF] Objects(3D/2D): {num_3d}/{num_2d} | "
-            f"Pure GPU Math: {gpu_time_ms:.2f}ms | "
-            f"Total Callback: {callback_time_ms:.2f}ms"
+            f"\n--- LIDAR PERFORMANCE PROFILE ---\n"
+            f"Active Objects     : 3D: {num_3d} | 2D: {num_2d}\n"
+            f"Node Callback Cost : GPU Math: {gpu_time_ms:.2f}ms | Total Callback: {callback_time_ms:.2f}ms\n"
+            f"Synchronizer Slop  : {sync_slop_ms:.2f}ms\n"
+            f"End-to-End Stack Age: LiDAR E2E: {lidar_e2e_age_ms:.2f}ms | Camera E2E: {camera_e2e_age_ms:.2f}ms"
         )
 
 def main(args=None):
     rclpy.init(args=args)
     node = FrustumFusionNode()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+
+    # 3. Spin up the Multi-Threaded environment
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+    
+    try:
+        executor.spin()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

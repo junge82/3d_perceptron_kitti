@@ -1,5 +1,8 @@
 import rclpy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
 from vision_msgs.msg import Detection3DArray, Detection3D, BoundingBox3D, ObjectHypothesisWithPose, ObjectHypothesis
@@ -24,18 +27,30 @@ class LidarClusterNode(Node):
         self.min_cluster = self.get_parameter('min_cluster_size').value
         self.max_cluster = self.get_parameter('max_cluster_size').value
 
+        # 1. Define the real-time profile inside __init__
+        lidar_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+
+        # 1. Create a Reentrant Callback Group
+        # This allows multiple callbacks in this node to run concurrently on different threads
+        self.callback_group = MutuallyExclusiveCallbackGroup()
+
         # Subscription
         self.subscription = self.create_subscription(
             PointCloud2,
             '/kitti/velodyne/pointcloud',
             self.listener_callback,
-            1) # Reduced queue size to avoid lag buildup
+            lidar_qos,  # Reduced queue size to avoid lag buildup
+            callback_group=self.callback_group) # CRITICAL
         
         # Publishers
-        self.cluster_pub = self.create_publisher(Detection3DArray, '/detection/lidar_clusters', 1)
-        self.no_ground_pub = self.create_publisher(PointCloud2, '/lidar/points_no_ground', 1)
+        self.cluster_pub = self.create_publisher(Detection3DArray, '/detection/lidar_clusters', lidar_qos)
+        self.no_ground_pub = self.create_publisher(PointCloud2, '/lidar/points_no_ground', lidar_qos)
         
-        self.get_logger().info('Lidar Cluster Node (Ultra Fast Optimization) started.')
+        self.get_logger().info('Multi-Threaded Lidar Cluster Node Initialized.')
 
     def listener_callback(self, msg):
         # 1. Fast Vectorized Zero-Copy Byte Conversion (Massive speed up)
@@ -144,9 +159,17 @@ class LidarClusterNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = LidarClusterNode()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+
+    # 4. Initialize the MultiThreadedExecutor
+    # It automatically detects your CPU core count and provisions an optimal thread pool
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+
+    try:
+        executor.spin()
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

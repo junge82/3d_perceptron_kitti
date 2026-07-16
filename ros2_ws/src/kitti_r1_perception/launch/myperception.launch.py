@@ -1,7 +1,8 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler, OpaqueFunction, TimerAction
+from launch.event_handlers import OnProcessStart
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -9,61 +10,59 @@ import xacro
 
 def generate_launch_description():
     
-    # # 1. Robot State Publisher (from kitti_r1_description)
-    # pkg_description = get_package_share_directory('kitti_r1_description')
-    # xacro_file = os.path.join(pkg_description, 'urdf', 'r1_fixed.urdf.xacro')
-    # robot_description_config = xacro.process_file(xacro_file)
-    # robot_description = robot_description_config.toxml()
+    # Common parameter to enforce across all tracking nodes
+    sim_time_param = {'use_sim_time': True}
 
-    # robot_state_publisher = Node(
-    #     package='robot_state_publisher',
-    #     executable='robot_state_publisher',
-    #     name='robot_state_publisher',
-    #     output='both',
-    #     parameters=[{
-    #         'robot_description': robot_description,
-    #         'use_sim_time': True
-    #     }],
-    # )
+    # Declare the launch argument for the bag path
+    bag_path_arg = DeclareLaunchArgument(
+        'bag_path',
+        default_value='/mnt/fastDisk/3d_perceptron_kitti/2011_09_29_drive_0071_sync/',
+        description='Absolute path to the ROS2 bag directory'
+    )
+    # NEW: Control playback speed (e.g., 0.5 for half speed, 2.0 for double speed)
+    play_rate_arg = DeclareLaunchArgument(
+        'play_rate',
+        default_value='1.0',
+        description='Playback rate speed multiplier for ros2 bag play'
+    )
 
-    # 2. Lidar Cluster Node
+    # NEW: Control the initial startup delay in seconds
+    playback_delay_arg = DeclareLaunchArgument(
+        'playback_delay',
+        default_value='4.0',
+        description='Seconds to wait after RViz starts before playing the bag'
+    )
+
+    # Lidar Cluster Node
     lidar_node = Node(
         package='kitti_r1_perception',
         executable='lidar_cluster_node',
         name='lidar_cluster_node',
         output='screen',
-        parameters=[{'use_sim_time': True}]
+        emulate_tty=True,
+        parameters=[sim_time_param]
     )
 
-    # 3. Camera Detector Node
+    # Camera Detector Node
     camera_node = Node(
         package='kitti_r1_perception',
         executable='camera_detector_node',
         name='camera_detector_node',
         output='screen',
+        emulate_tty=True,
         parameters=[{'use_sim_time': True, 'model_version': 'yolov8n'}]
     )
 
-    # 4. Frustum Fusion Node
+    # Frustum Fusion Node
     fusion_node = Node(
         package='kitti_r1_perception',
         executable='frustum_fusion_node',
         name='frustum_fusion_node',
         output='screen',
-        parameters=[{'use_sim_time': True}]
+        parameters=[sim_time_param]
     )
 
-    # 5. BEV Visualizer Node
-    bev_node = Node(
-        package='kitti_r1_perception',
-        executable='bev_visualizer_node',
-        name='bev_visualizer_node',
-        output='screen',
-        parameters=[{'use_sim_time': True}]
-    )
-
-    # 6. RViz2 Node
-    # Get path to rviz config
+    # RViz2 Node
     rviz_config_file = PathJoinSubstitution([
         FindPackageShare('kitti_r1_description'),
         'rviz',
@@ -76,15 +75,14 @@ def generate_launch_description():
         name='rviz2',
         output='screen',
         arguments=['-d', rviz_config_file],
-        parameters=[{'use_sim_time': True}]
+        parameters=[sim_time_param]
     )
 
-    # Static transform publisher to bridge the gap for RViz
+    # Static transform publishers
     tf = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
         name='map_to_velodyne_tf',
-        # Hardcoding the 180-degree roll via Quaternions to fix the ROS2 Euler bug
         arguments=[
             '--x', '0', '--y', '0', '--z', '0', 
             '--qx', '0', '--qy', '0', '--qz', '1', '--qw', '0', 
@@ -92,7 +90,6 @@ def generate_launch_description():
         ]
     )
 
-    # New: Static transform publisher to bridge Camera frame to Map
     tf_camera = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
@@ -101,17 +98,47 @@ def generate_launch_description():
             '--x', '0', '--y', '0', '--z', '0', 
             '--qx', '0', '--qy', '0', '--qz', '0', '--qw', '1', 
             '--frame-id', 'map', 
-            # Replace 'camera' below with the actual frame_id of your camera topic
             '--child-frame-id', 'camera' 
         ]
     )
 
+    # FIX: Define the setup function inside the main scope to natively capture 'rviz_node'
+    def launch_setup(context, *args, **kwargs):
+        # Safely retrieve the string path from the launch context
+        bag_path_string = LaunchConfiguration('bag_path').perform(context)
+        rate_string = LaunchConfiguration('play_rate').perform(context)
+        delay_float = float(LaunchConfiguration('playback_delay').perform(context))
+
+        # Define the bag process using the evaluated path
+        bag_play_process = ExecuteProcess(
+            cmd=['ros2', 'bag', 'play', bag_path_string, '--clock', '--rate', rate_string],
+            output='screen'
+        )
+
+        delayed_bag_action = TimerAction(
+            period=delay_float,
+            actions=[bag_play_process]
+        )
+
+        # Wrap the bag process inside the OnProcessStart event handler
+        delay_bag_play = RegisterEventHandler(
+            event_handler=OnProcessStart(
+                target_action=rviz_node,
+                on_start=[delayed_bag_action]
+            )
+        )        
+        return [delay_bag_play]
+
     return LaunchDescription([   
+        bag_path_arg, 
+        play_rate_arg,
+        playback_delay_arg,
         lidar_node,
         camera_node,
         fusion_node,
-        #bev_node,
         tf,
         tf_camera,
-        rviz_node
+        rviz_node,
+        # OpaqueFunction now runs cleanly without dict/argument mismatches
+        OpaqueFunction(function=launch_setup)
     ])
