@@ -9,13 +9,14 @@ from vision_msgs.msg import Detection3DArray, Detection3D, BoundingBox3D, Object
 from geometry_msgs.msg import Pose, PoseWithCovariance 
 import open3d as o3d
 import numpy as np
+import time  # High-precision CPU timer for profiling
 
 class LidarClusterNode(Node):
     def __init__(self):
         super().__init__('lidar_cluster_node')
         
         # Parameters
-        self.declare_parameter('voxel_size', 0.15)  # Increased default slightly to heavily cut down execution time
+        self.declare_parameter('voxel_size', 0.15)  
         self.declare_parameter('ground_distance_threshold', 0.3)
         self.declare_parameter('cluster_tolerance', 0.6)
         self.declare_parameter('min_cluster_size', 20)
@@ -27,15 +28,14 @@ class LidarClusterNode(Node):
         self.min_cluster = self.get_parameter('min_cluster_size').value
         self.max_cluster = self.get_parameter('max_cluster_size').value
 
-        # 1. Define the real-time profile inside __init__
+        # Define the real-time profile inside __init__
         lidar_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
             depth=1
         )
 
-        # 1. Create a Reentrant Callback Group
-        # This allows multiple callbacks in this node to run concurrently on different threads
+        # Create a Mutually Exclusive Callback Group for thread isolation
         self.callback_group = MutuallyExclusiveCallbackGroup()
 
         # Subscription
@@ -43,18 +43,40 @@ class LidarClusterNode(Node):
             PointCloud2,
             '/kitti/velodyne/pointcloud',
             self.listener_callback,
-            lidar_qos,  # Reduced queue size to avoid lag buildup
-            callback_group=self.callback_group) # CRITICAL
+            lidar_qos,  
+            callback_group=self.callback_group) 
         
         # Publishers
         self.cluster_pub = self.create_publisher(Detection3DArray, '/detection/lidar_clusters', lidar_qos)
         self.no_ground_pub = self.create_publisher(PointCloud2, '/lidar/points_no_ground', lidar_qos)
         
-        self.get_logger().info('Multi-Threaded Lidar Cluster Node Initialized.')
+        self.get_logger().info('Multi-Threaded Lidar Cluster Node Initialized with Split Profiling.')
 
     def listener_callback(self, msg):
-        # 1. Fast Vectorized Zero-Copy Byte Conversion (Massive speed up)
+        node_start_time = time.perf_counter()
+
+        # Extract current simulation timeline clock
+        now = self.get_clock().now()
+        msg_stamp = rclpy.time.Time.from_msg(msg.header.stamp, clock_type=rclpy.time.ClockType.ROS_TIME)
+        data_age_ms = (now - msg_stamp).nanoseconds / 1e6
+
+        # 1. Fast Vectorized Zero-Copy Byte Conversion
         points = self.fast_pointcloud2_to_numpy(msg)
+        if points.size == 0:
+            return
+        
+        # ----------------------------------------------------------------------
+        # FIXED: Corrected KITTI ROI Window Filter (X=Forward, Y=Lateral, Z=Height)
+        # ----------------------------------------------------------------------
+        roi_start = time.perf_counter()
+        roi_mask = (
+            (points[:, 0] >= 1.5)   & (points[:, 0] <= 50.0) &  # X is FORWARD (1.5m to 50m ahead)
+            (points[:, 1] >= -25.0) & (points[:, 1] <= 25.0) &  # Y is LATERAL (25m Right to 25m Left)
+            (points[:, 2] >= -1.8)  & (points[:, 2] <= 2.0)      # Z is VERTICAL Height
+        )
+        points = points[roi_mask]
+        roi_time_ms = (time.perf_counter() - roi_start) * 1000.0
+        
         if points.size == 0:
             return
         
@@ -67,22 +89,29 @@ class LidarClusterNode(Node):
         if len(pcd_down.points) < self.min_cluster:
             return
 
+        ransac_start = time.perf_counter()
         plane_model, inliers = pcd_down.segment_plane(distance_threshold=self.ground_dist,
                                                      ransac_n=3,
-                                                     num_iterations=40) # Reduced from 100 to 40 iteration cap
+                                                     num_iterations=30) # Dropped to 30 for speed
         
         pcd_no_ground = pcd_down.select_by_index(inliers, invert=True)
         no_ground_pts = np.asarray(pcd_no_ground.points)
+        ransac_time_ms = (time.perf_counter() - ransac_start) * 1000.0
+        
         if no_ground_pts.size == 0:
             return
 
-        # 4. Euclidean DBSCAN Clustering
+        # 4. Euclidean DBSCAN Clustering (Now processing significantly fewer points)
+        dbscan_start = time.perf_counter()
         labels = np.array(pcd_no_ground.cluster_dbscan(eps=self.cluster_tol, min_points=self.min_cluster, print_progress=False))
+        dbscan_time_ms = (time.perf_counter() - dbscan_start) * 1000.0
+        
         max_label = labels.max() if labels.size > 0 else -1
         if max_label < 0:
             return
 
-        # 5. Fast Parallel Vector Center/Extent Processing via Numpy (Eliminates sequential loop slowdowns)
+        # 5. Parallel Vector Center/Extent Processing via Numpy
+        loop_start = time.perf_counter()
         detections = Detection3DArray()
         detections.header = msg.header
         
@@ -94,7 +123,6 @@ class LidarClusterNode(Node):
             if num_points < self.min_cluster or num_points > self.max_cluster:
                 continue
                 
-            # Compute math coordinates directly on native layout instead of slicing geometry structures
             min_bound = np.min(cluster_points, axis=0)
             max_bound = np.max(cluster_points, axis=0)
             center = (min_bound + max_bound) / 2.0
@@ -121,6 +149,7 @@ class LidarClusterNode(Node):
             bbox.center.position.x = float(center[0])
             bbox.center.position.y = float(center[1])
             bbox.center.position.z = float(center[2])
+            bbox.center.orientation.w = 1.0
             bbox.size.x = float(extent[0])
             bbox.size.y = float(extent[1])
             bbox.size.z = float(extent[2])
@@ -128,12 +157,29 @@ class LidarClusterNode(Node):
             detection.bbox = bbox
             detections.detections.append(detection)
 
+        msg_loop_time_ms = (time.perf_counter() - loop_start) * 1000.0
+
         # Publish results
         self.cluster_pub.publish(detections)
         
         # Publish Debug Cloud
         no_ground_msg = point_cloud2.create_cloud_xyz32(msg.header, no_ground_pts)
         self.no_ground_pub.publish(no_ground_msg)
+
+        node_time_ms = (time.perf_counter() - node_start_time) * 1000.0
+        num_clusters = len(detections.detections)
+
+        # Log detailed execution breakdown
+        self.get_logger().info(
+            f"\n--- LIDAR PROFILING BREAKDOWN ---\n"
+            f"Generated Clusters  : {num_clusters}\n"
+            f"Pre-Callback Age    : {data_age_ms:.2f}ms\n"
+            f"NumPy ROI Window Filter: {roi_time_ms:.2f}ms\n"
+            f"RANSAC Ground Plane : {ransac_time_ms:.2f}ms\n"
+            f"DBSCAN Clustering   : {dbscan_time_ms:.2f}ms\n"
+            f"ROS Message Loop    : {msg_loop_time_ms:.2f}ms\n"
+            f"Total Callback Cost : {node_time_ms:.2f}ms"
+        )
 
     def fast_pointcloud2_to_numpy(self, msg):
         """ Zero-copy memory view slicing. Skips generators entirely. """

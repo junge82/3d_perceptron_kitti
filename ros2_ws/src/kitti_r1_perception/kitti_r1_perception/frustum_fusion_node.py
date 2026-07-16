@@ -194,7 +194,7 @@ class FrustumFusionNode(Node):
 
         # Print all metrics clearly categorized
         self.get_logger().info(
-            f"\n--- LIDAR PERFORMANCE PROFILE ---\n"
+            f"\n--- Fusion PERFORMANCE PROFILE ---\n"
             f"Active Objects     : 3D: {num_3d} | 2D: {num_2d}\n"
             f"Node Callback Cost : GPU Math: {gpu_time_ms:.2f}ms | Total Callback: {callback_time_ms:.2f}ms\n"
             f"Synchronizer Slop  : {sync_slop_ms:.2f}ms\n"
