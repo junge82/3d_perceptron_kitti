@@ -14,7 +14,7 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 
-# METHOD 3: Import the ament index tracking utility for dynamic path resolution
+
 from ament_index_python.packages import get_package_share_directory
 
 class CameraDetectorNode(Node):
@@ -23,33 +23,32 @@ class CameraDetectorNode(Node):
         
         self.callback_group = MutuallyExclusiveCallbackGroup()
 
-        # Parameters
-        self.declare_parameter('model_version', 'yolov8n') 
-        self.declare_parameter('conf_threshold', 0.25)
+         # Use unbuffered sys.stdout to ensure prints bypass launch file buffers immediately
+        import sys
+        sys.stdout.reconfigure(line_buffering=True)
         
-        model_ver = self.get_parameter('model_version').value
-        self.conf_threshold = self.get_parameter('conf_threshold').value
-        
-        model_path = f"{model_ver}.pt"
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        print(f"Using device: {self.device}")
-        self.model = YOLO(model_path)
-        
-        self.is_cuda = (self.device == 'cuda')
-        
-        try:
-            self.model.to(self.device)
-        except Exception:
-            pass
-        self.class_names = self.model.names
-        
+        self.callback_group = MutuallyExclusiveCallbackGroup()
         self.bridge = CvBridge()
-
+        
         # Latency lists for post-run distribution plotting
         self.inference_latencies = []
         self.total_latencies = []
+        
+        # Parameters (Declared in main init scope)
+        self.declare_parameter('model_version', 'yolov8n') 
+        self.declare_parameter('conf_threshold', 0.25)
+        self.conf_threshold = self.get_parameter('conf_threshold').value
+        
+        self.bridge = CvBridge()
+        
+        # 2. DO NOT load the model here. Instead, create a one-shot timer 
+        # This allows the node to register with ROS instantly without blocking
+        self.init_timer = self.create_timer(0.1, self.async_model_init)
+    
+    def async_model_init(self):
+        # Cancel the timer immediately so it only runs once
+        self.init_timer.cancel()
 
-        # METHOD 3: Dynamically target the package install share workspace directory
         try:
             self.package_share_dir = get_package_share_directory('kitti_r1_perception')
             self.get_logger().info(f"Resolved package share path: {self.package_share_dir}")
@@ -57,12 +56,52 @@ class CameraDetectorNode(Node):
             self.package_share_dir = os.getcwd()
             self.get_logger().warn(f"Failed to resolve package share. Falling back to CWD: {self.package_share_dir}")
 
+        self.torch_home_dir = os.path.join(self.package_share_dir, 'torch_home')
+        os.makedirs(self.torch_home_dir, exist_ok=True)
+        os.environ['TORCH_HOME'] = self.torch_home_dir
+
+        # Latency lists for post-run distribution plotting
+        self.inference_latencies = []
+        self.total_latencies = []
+        
+        self.get_logger().info(f"Set TORCH_HOME to: {self.torch_home_dir}")
+
         realtime_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE, 
             history=HistoryPolicy.KEEP_LAST,
-            depth=1 
+            depth=1
         )
+
+        model_ver = self.get_parameter('model_version').value
+        self.conf_threshold = self.get_parameter('conf_threshold').value
+        # Prefer model file inside TORCH_HOME to leverage local cache/store
+        model_filename = f"{model_ver}.pt"
+        model_path_local = os.path.join(self.torch_home_dir, model_filename)
+        if os.path.exists(model_path_local):
+            model_path = model_path_local
+        else:
+            # fallback to simple name which lets ultralytics attempt download or resolve
+            model_path = model_filename
+
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        print(f"Using device: {self.device}")
+
+        # Pass device to YOLO constructor and prefer the model located under TORCH_HOME when available
+        try:
+            self.model = YOLO(model_path, device=self.device)
+        except TypeError:
+            # Older ultralytics versions may not accept device in constructor
+            self.model = YOLO(model_path)
         
+        self.is_cuda = (self.device == 'cuda')
+        
+        try:
+            # Ensure model is on desired device
+            self.model.to(self.device)
+        except Exception:
+            pass
+        self.class_names = self.model.names
+
         # Subscription
         self.subscription = self.create_subscription(
             Image,
@@ -194,19 +233,21 @@ class CameraDetectorNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = CameraDetectorNode()
-
-    executor = MultiThreadedExecutor()
-    executor.add_node(node)
 
     try:
+        node = CameraDetectorNode()
+        executor = MultiThreadedExecutor()
+        executor.add_node(node)
         executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
         node.save_latency_distribution_plot()
         node.destroy_node()
-        rclpy.shutdown()
+
+        # FIXED: Enforce clear context protection guard for ROS 2 Jazzy
+        if rclpy.ok():
+            rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

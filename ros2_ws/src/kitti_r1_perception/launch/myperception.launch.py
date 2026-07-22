@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler, OpaqueFunction, TimerAction
@@ -13,12 +14,30 @@ def generate_launch_description():
     # Common parameter to enforce across all tracking nodes
     sim_time_param = {'use_sim_time': True}
 
-    # Declare the launch argument for the bag path
+    # 1. Get the installation directory for this specific package
+    # This evaluates to: /home/gergo/work/3d_perceptron_kitti/ros2_ws/install/kitti_r1_perception/share/kitti_r1_perception
+    package_share_dir = Path(get_package_share_directory('kitti_r1_perception'))
+    print(f"Package share directory: {package_share_dir}")
+    # 2. Step up past 'share', package name, 'install', and 'ros2_ws' to reach '3d_perceptron_kitti'
+    # 5 steps up (kitti_r1_perception -> share -> kitti_r1_perception -> install)
+    workspace_root = package_share_dir.parents[3]
+    print(f"Workspace root directory: {workspace_root}")
+    # 3. Safely target your dataset folder relative to the workspace root core
+    default_bag_path = (workspace_root / "2011_09_26_drive_0001_sync").resolve()
+
+    # Declare the bag path argument using the calculated directory fallback
     bag_path_arg = DeclareLaunchArgument(
         'bag_path',
-        default_value='/mnt/fastDisk/3d_perceptron_kitti/2011_09_29_drive_0071_sync/',
-        description='Absolute path to the ROS2 bag directory'
+        default_value=str(default_bag_path),
+        description='Path to the input ROS 2 bag folder'
     )
+
+    log_level_arg = DeclareLaunchArgument(
+        'log_level',
+        default_value='INFO',
+        description='Logging level (DEBUG, INFO, WARN, ERROR, FATAL)'
+    )
+    
     # NEW: Control playback speed (e.g., 0.5 for half speed, 2.0 for double speed)
     play_rate_arg = DeclareLaunchArgument(
         'play_rate',
@@ -29,7 +48,7 @@ def generate_launch_description():
     # NEW: Control the initial startup delay in seconds
     playback_delay_arg = DeclareLaunchArgument(
         'playback_delay',
-        default_value='4.0',
+        default_value='8.0',
         description='Seconds to wait after RViz starts before playing the bag'
     )
 
@@ -40,7 +59,10 @@ def generate_launch_description():
         name='lidar_cluster_node',
         output='screen',
         emulate_tty=True,
-        parameters=[sim_time_param]
+        parameters=[sim_time_param],
+        arguments=['--ros-args', '--log-level', LaunchConfiguration('log_level'),
+                   '--log-file-name', 'lidar_cluster_node.log'
+        ]
     )
 
     # Camera Detector Node
@@ -50,7 +72,17 @@ def generate_launch_description():
         name='camera_detector_node',
         output='screen',
         emulate_tty=True,
-        parameters=[{'use_sim_time': True, 'model_version': 'yolov8n'}]
+        additional_env={'PYTORCH_CUDA_ALLOC_CONF': 'max_split_size_mb:128',
+                        'TORCH_CUDA_ARCH_LIST': '8.6+PTX',
+                        'TORCH_HOME': os.path.join(get_package_share_directory('kitti_r1_perception'), 'models'),
+                        'PYTHONUNBUFFERED': '1'
+                        },
+        parameters=[{'use_sim_time': True, 'model_version': 'yolov8n'}],
+        arguments=['--ros-args',
+                   '--log-level',
+                    LaunchConfiguration('log_level'),
+                    '--log-file-name', 'camera_detector_node.log'
+                ],
     )
 
     # Frustum Fusion Node
@@ -60,7 +92,12 @@ def generate_launch_description():
         name='frustum_fusion_node',
         output='screen',
         emulate_tty=True,
-        parameters=[sim_time_param]
+        parameters=[sim_time_param],
+        arguments=['--ros-args',
+                   '--log-level',
+                   LaunchConfiguration('log_level'),
+                   '--log-file-name', 'frustum_fusion_node.log'
+                   ]
     )
 
     # RViz2 Node
@@ -80,7 +117,7 @@ def generate_launch_description():
     )
 
     # Static transform publishers
-    tf = Node(
+    map_to_velodyne_tf_publisher = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
         name='map_to_velodyne_tf',
@@ -91,7 +128,7 @@ def generate_launch_description():
         ]
     )
 
-    tf_camera = Node(
+    map_to_camera_tf_publisher = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
         name='map_to_camera_tf',
@@ -134,11 +171,12 @@ def generate_launch_description():
         bag_path_arg, 
         play_rate_arg,
         playback_delay_arg,
+        log_level_arg,
         lidar_node,
         camera_node,
         fusion_node,
-        tf,
-        tf_camera,
+        map_to_velodyne_tf_publisher,
+        map_to_camera_tf_publisher,
         rviz_node,
         # OpaqueFunction now runs cleanly without dict/argument mismatches
         OpaqueFunction(function=launch_setup)

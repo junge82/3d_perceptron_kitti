@@ -19,6 +19,10 @@ ros-jazzy-tf2-geometry-msgs = "*"
 ros-jazzy-robot-state-publisher = "*"
 ros-jazzy-xacro = ">=2.1.1,<3"
 
+# Modern CMake Vendor Updates
+ros-jazzy-gtest-vendor = ">=1.14.0" # 👈 FORCES PIXI TO OVERRIDE EMBEDDED PACKAGES WITH MODERN CMAKE POLICIES
+gtest = ">=1.14.0"                # 👈 BINDS MODERN UPSTREAM HEADERS
+
 # ROS 2 Build Tools
 colcon-ros = ">=0.5.0,<0.6"
 colcon-common-extensions = ">=0.3.0,<0.4"
@@ -49,4 +53,11 @@ open3d = "*"
 
 # 5. Quick GPU test tasks
 [tasks]
+# 1. Warm up the NVME cache by reading heavy libraries sequentially into RAM
+warmup = { cmd = "python -c \"import open3d, sklearn, pandas, torch, ultralytics; print('--- HDD Cache Warmup Complete ---')\"" }
+
+# 2. Run the pipeline with custom log file output mapping inside an explicit Bash shell
+run-pipeline = { cmd = "bash -c 'export PYTHONUNBUFFERED=1 && colcon build --symlink-install && source install/setup.bash && ros2 launch kitti_r1_perception myperception.launch.py playback_delay:=8.0 2>&1 | tee pipeline_session.log'", depends-on = ["warmup"] }
+
+# 3. Keep your existing GPU check
 test-gpu = { cmd = "python -c \"import open3d as o3d; print('Open3D CUDA available:', o3d.core.cuda.is_available() if hasattr(o3d, 'core') else 'Check open3d.core'); import torch; print('PyTorch CUDA available:', torch.cuda.is_available())\"" }
