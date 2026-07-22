@@ -15,11 +15,11 @@ def generate_launch_description():
     sim_time_param = {'use_sim_time': True}
 
     # 1. Get the installation directory for this specific package
-    # This evaluates to: /home/gergo/work/3d_perceptron_kitti/ros2_ws/install/kitti_r1_perception/share/kitti_r1_perception
+    # This is a more robust way to locate the package share directory, especially in complex workspaces.
     package_share_dir = Path(get_package_share_directory('kitti_r1_perception'))
     print(f"Package share directory: {package_share_dir}")
-    # 2. Step up past 'share', package name, 'install', and 'ros2_ws' to reach '3d_perceptron_kitti'
-    # 5 steps up (kitti_r1_perception -> share -> kitti_r1_perception -> install)
+    # 2. Step up past 'share', package name, 'install', to reach '3d_perceptron_kitti'
+    #    This assumes the package is installed in a standard ROS 2 workspace structure. 
     workspace_root = package_share_dir.parents[3]
     print(f"Workspace root directory: {workspace_root}")
     # 3. Safely target your dataset folder relative to the workspace root core
@@ -48,7 +48,7 @@ def generate_launch_description():
     # NEW: Control the initial startup delay in seconds
     playback_delay_arg = DeclareLaunchArgument(
         'playback_delay',
-        default_value='8.0',
+        default_value='3.0',
         description='Seconds to wait after RViz starts before playing the bag'
     )
 

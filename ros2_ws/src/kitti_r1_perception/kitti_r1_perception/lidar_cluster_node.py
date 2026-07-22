@@ -63,11 +63,44 @@ class LidarClusterNode(Node):
         # Configure native Open3D device context targeting your RTX 4060
         self.device = o3d.core.Device("CUDA:0")
 
+        # ⚡ NEW: Complete CPU+GPU pipeline warmup sequence
+        self.warmup_gpu()
+
         # Metrics lists for post-run distribution plotting
         self.ransac_latencies = []
         self.dbscan_latencies = []
         self.total_latencies = []
         self.get_logger().info('Multi-Threaded Lidar Cluster Node Initialized with RTX 4060 GPU Acceleration & Geometric Filtering.')
+
+    def warmup_gpu(self):
+        """Pre-compiles CPU arrays with the exact shape matching the live sensor stream."""
+        try:
+            # 1. Match typical KITTI point sizes exactly (~115,000 to 120,000 points)
+            exact_sensor_shape = (115000, 3)
+            dummy_pts = np.random.uniform(-10.0, 40.0, exact_sensor_shape).astype(np.float32)
+            
+            # 2. Force complete structural cache tracking for the ROI filters
+            roi_mask = (
+                (dummy_pts[:, 0] >= 1.5)   & (dummy_pts[:, 0] <= 50.0) &  
+                (dummy_pts[:, 1] >= -25.0) & (dummy_pts[:, 1] <= 25.0) &  
+                (dummy_pts[:, 2] >= -1.8)  & (dummy_pts[:, 2] <= 2.0)      
+            )
+            dummy_pts = dummy_pts[roi_mask]
+
+            # 3. Force structural allocation on the RTX 4060
+            o3d_points = o3d.core.Tensor(dummy_pts, dtype=o3d.core.float32, device=self.device)
+            pcd_gpu = o3d.t.geometry.PointCloud(o3d_points)
+            
+            # 4. Correct Open3D Tensor API call order (distance_threshold, ransac_n, num_iterations)
+            pcd_down = pcd_gpu.voxel_down_sample(voxel_size=self.voxel_size)
+            _, inliers = pcd_down.segment_plane(self.ground_dist, 3, 30)
+            
+            pcd_no_ground = pcd_down.select_by_index(inliers, invert=True)
+            _ = pcd_no_ground.cluster_dbscan(eps=self.cluster_tol, min_points=self.min_cluster)
+            
+            self.get_logger().info('CUDA Pipelines & NumPy ROI structures compiled successfully.')
+        except Exception as e:
+            self.get_logger().warn(f'Warmup execution bypassed: {str(e)}')
 
     def listener_callback(self, msg):
 # Start total callback tracking timer
