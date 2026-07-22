@@ -321,17 +321,27 @@ class LidarClusterNode(Node):
             print(f"Failed to generate performance plot: {e}")
 
     def fast_pointcloud2_to_numpy(self, msg):
-        """ Zero-copy memory view slicing. Skips generators entirely. """
+        """ True zero-copy structure slicing. Eliminates hstack allocations entirely. """
+        """ Contiguous Slicing: In standard PointCloud2 messages (like KITTI),
+            X, Y, and Z fields are adjacent in memory (bytes 0-3, 4-7, and 8-11).
+            Slicing 0:12 captures all three axes at once.
+            Zero New Allocations: Instead of slicing three separate times 
+            and forcing np.hstack to allocate new RAM rows,
+              .view(dtype=np.float32) tells your CPU to read the existing buffer as
+              a sequential sequence of floating-point coordinates. 
+            This avoids any new memory allocation and keeps the operation in-place.
+        """
+        # 1. Cast raw bytes into an unstructured 1D uint8 array
         data_arr = np.frombuffer(msg.data, dtype=np.uint8)
-        point_step = msg.point_step
-        num_points = (msg.height * msg.width)
-        reshaped = data_arr.reshape(num_points, point_step)
         
-        x_pts = reshaped[:, 0:4].view(dtype=np.float32)
-        y_pts = reshaped[:, 4:8].view(dtype=np.float32)
-        z_pts = reshaped[:, 8:12].view(dtype=np.float32)
+        # 2. Reshape into 2D rows matching the layout step
+        reshaped = data_arr.reshape((msg.height * msg.width), msg.point_step)
         
-        points = np.hstack((x_pts, y_pts, z_pts))
+        # 3. Slice the first 12 contiguous bytes (X, Y, Z are sequential: 4 bytes * 3 fields)
+        # Then instantly cast them into 3D Float32 points using a memory view
+        points = reshaped[:, 0:12].view(dtype=np.float32).reshape(-1, 3)
+        
+        # 4. Filter non-finite elements efficiently
         return points[np.isfinite(points).all(axis=1)]
 
 def main(args=None):
