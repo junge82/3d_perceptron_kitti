@@ -81,9 +81,9 @@ class LidarClusterNode(Node):
             
             # 2. Force complete structural cache tracking for the ROI filters
             roi_mask = (
-                (dummy_pts[:, 0] >= 1.5)   & (dummy_pts[:, 0] <= 50.0) &  
-                (dummy_pts[:, 1] >= -25.0) & (dummy_pts[:, 1] <= 25.0) &  
-                (dummy_pts[:, 2] >= -1.8)  & (dummy_pts[:, 2] <= 2.0)      
+                (dummy_pts[:, 0] >= 1.5)   & (dummy_pts[:, 0] <= 50.0) &     # X is FORWARD (1.5m to 50m ahead)
+                (dummy_pts[:, 1] >= -25.0) & (dummy_pts[:, 1] <= 25.0) &     # Y is LATERAL (25m Right to 25m Left)
+                (dummy_pts[:, 2] >= -1.8)  & (dummy_pts[:, 2] <= 2.0)        # Z is VERTICAL Height   
             )
             dummy_pts = dummy_pts[roi_mask]
 
@@ -103,7 +103,7 @@ class LidarClusterNode(Node):
             self.get_logger().warn(f'Warmup execution bypassed: {str(e)}')
 
     def listener_callback(self, msg):
-# Start total callback tracking timer
+        # Start total callback tracking timer
         node_start_time = time.perf_counter()
 
         # 1. Fetch current clock directly from the node instance

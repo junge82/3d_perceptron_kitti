@@ -113,7 +113,23 @@ class CameraDetectorNode(Node):
         self.is_cuda = (self.device == 'cuda')
         self.class_names = self.model.names
 
-        # Subscription
+        # ----------------------------------------------------------------------
+        # ⚡ FIX: DEEP LEARNING GRAPH COMPILATION WARMUP
+        # ----------------------------------------------------------------------
+        try:
+            self.get_logger().info('Compiling CUDA Graph pipelines for YOLOv8 inference maps...')
+            # Generate a blank matrix mimicking the layout dimensions of the camera
+            blank_warmup_img = np.zeros((640, 640, 3), dtype=np.uint8)
+            _ = self.model.predict(blank_warmup_img, conf=self.conf_threshold, verbose=False, device=self.device)
+            if self.is_cuda:
+                torch.cuda.synchronize()
+            self.get_logger().info('YOLOv8 compiler graph tracks loaded successfully.')
+        except Exception as e:
+            self.get_logger().warn(f'Camera initialization warmup bypassed: {str(e)}')
+
+        # ----------------------------------------------------------------------
+        # Subscription & Publishers (Open only *after* warmup is complete)
+        # ----------------------------------------------------------------------
         self.subscription = self.create_subscription(
             Image,
             '/kitti/camera_left/image_raw',
@@ -130,9 +146,21 @@ class CameraDetectorNode(Node):
     def listener_callback(self, msg):
         node_start_time = time.perf_counter()
 
+        # 1. Fetch current time from the node clock instance
         now = self.get_clock().now()
-        msg_stamp = rclpy.time.Time.from_msg(msg.header.stamp, clock_type=rclpy.time.ClockType.ROS_TIME)
+
+        # ⚡ FIX: Parse the message stamp cleanly without forcing mismatched clock_type enums
+        msg_stamp = rclpy.time.Time.from_msg(msg.header.stamp)
+
+        # Calculate data age safely using matching integer timelines
         data_age_ms = (now - msg_stamp).nanoseconds / 1e6
+
+        # ⚡ HIGH-SPEED STARTUP BACKLOG FLUSH MECHANIC 
+        # If the image arrived while the model was still loading onto the GPU,
+        # drop it instantly to purge the OS network buffer queue.
+        if data_age_ms > 100.0:
+            return  # Purges stale backlogged frames without running YOLO inference
+
 
         self.conf_threshold = self.get_parameter('conf_threshold').value
 

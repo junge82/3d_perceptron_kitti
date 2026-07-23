@@ -7,15 +7,17 @@ from launch.event_handlers import OnProcessStart
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
-import xacro
 
 def generate_launch_description():
-    
-    # Common parameter to enforce across all tracking nodes
-    sim_time_param = {'use_sim_time': True}
+    # Declare parameter mapping defaults
+    use_sim_time_arg = DeclareLaunchArgument(
+        'use_sim_time',
+        default_value='true', 
+        description='Use simulation clock topic if true'
+    )
 
-    # 1. Get the installation directory for this specific package
-    # This is a more robust way to locate the package share directory, especially in complex workspaces.
+    sim_time_config = LaunchConfiguration('use_sim_time')
+
     package_share_dir = Path(get_package_share_directory('kitti_r1_perception'))
     print(f"Package share directory: {package_share_dir}")
     # 2. Step up past 'share', package name, 'install', to reach '3d_perceptron_kitti'
@@ -59,7 +61,7 @@ def generate_launch_description():
         name='lidar_cluster_node',
         output='screen',
         emulate_tty=True,
-        parameters=[sim_time_param],
+        parameters=[{'use_sim_time': sim_time_config}],
         arguments=['--ros-args', '--log-level', LaunchConfiguration('log_level'),
                    '--log-file-name', 'lidar_cluster_node.log'
         ]
@@ -77,7 +79,7 @@ def generate_launch_description():
                         'TORCH_HOME': os.path.join(get_package_share_directory('kitti_r1_perception'), 'models'),
                         'PYTHONUNBUFFERED': '1'
                         },
-        parameters=[{'use_sim_time': True, 'model_version': 'yolov8n'}],
+        parameters=[{'use_sim_time': sim_time_config, 'model_version': 'yolov8n'}],
         arguments=['--ros-args',
                    '--log-level',
                     LaunchConfiguration('log_level'),
@@ -92,7 +94,7 @@ def generate_launch_description():
         name='frustum_fusion_node',
         output='screen',
         emulate_tty=True,
-        parameters=[sim_time_param],
+        parameters=[{'use_sim_time': sim_time_config}],
         arguments=['--ros-args',
                    '--log-level',
                    LaunchConfiguration('log_level'),
@@ -113,7 +115,8 @@ def generate_launch_description():
         name='rviz2',
         output='screen',
         arguments=['-d', rviz_config_file],
-        parameters=[sim_time_param]
+        # ⚡ FIX 1: Replaced the undefined 'sim_time_param' variable with a clean dictionary format block
+        parameters=[{'use_sim_time': sim_time_config}]
     )
 
     # Static transform publishers
@@ -121,6 +124,8 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='map_to_velodyne_tf',
+        # ⚡ FIX 2: Added parameter mapping here so TF frames listen to RCL_CLOCK_ROS clocks
+        parameters=[{'use_sim_time': sim_time_config}],
         arguments=[
             '--x', '0', '--y', '0', '--z', '0', 
             '--qx', '0', '--qy', '0', '--qz', '1', '--qw', '0', 
@@ -132,6 +137,8 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='map_to_camera_tf',
+        # ⚡ FIX 3: Added parameter mapping here so TF frames listen to RCL_CLOCK_ROS clocks
+        parameters=[{'use_sim_time': sim_time_config}],
         arguments=[
             '--x', '0', '--y', '0', '--z', '0', 
             '--qx', '0', '--qy', '0', '--qz', '0', '--qw', '1', 
@@ -168,6 +175,7 @@ def generate_launch_description():
         return [delay_bag_play]
 
     return LaunchDescription([   
+        use_sim_time_arg,  # ⚡ Included back into launch block stack array core
         bag_path_arg, 
         play_rate_arg,
         playback_delay_arg,

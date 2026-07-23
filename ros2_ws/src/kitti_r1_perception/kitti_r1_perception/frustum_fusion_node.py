@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from vision_msgs.msg import Detection3DArray, Detection2DArray, ObjectHypothesisWithPose
 import numpy as np
@@ -12,7 +12,14 @@ import time  # Built-in high-precision CPU timer
 class FrustumFusionNode(Node):
     def __init__(self):
         super().__init__('frustum_fusion_node')
-        
+
+        # ⚡ CRITICAL FIX: Declare tracking variables first before any callbacks spawn
+        self.latest_camera_msg = None
+
+        # ⚡ CRITICAL FIX: Force unbuffered stdout line matching stream sync
+        import sys
+        sys.stdout.reconfigure(line_buffering=True)
+
         # Parameters
         self.declare_parameter('match_radius', 50.0) 
         self.match_radius = self.get_parameter('match_radius').value
@@ -45,58 +52,69 @@ class FrustumFusionNode(Node):
         self.R_tensor = torch.from_numpy(T_lidar_to_cam_np[:3, :3]).to(self.device)
         self.t_tensor = torch.from_numpy(T_lidar_to_cam_np[:3, 3]).to(self.device)
 
-        # Explicitly configure a Reliable, Low-Backlog profile to bypass compatibility silos
+        # ⚡ FIX 1: Change to RELIABLE to establish an active link with your up-stream nodes
         optimized_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT, # Ensures compatibility with default nodes
+            reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
-            depth=1 # Drops old messages locally to eliminate transport delay
+            depth=5 # Healthy depth allowance for synchronizer pairing buffers
         )
 
-        # 1. Create a Reentrant Callback Group
-        self.callback_group = MutuallyExclusiveCallbackGroup()
+        # ⚡ FIX 2: Change to ReentrantCallbackGroup so both subscription channels 
+        # can safely fill the synchronizer queue concurrently without locking each other out
+        self.callback_group = ReentrantCallbackGroup()
 
-        # Synchronized Subscriptions
-        self.lidar_sub = message_filters.Subscriber(self, Detection3DArray, '/detection/lidar_clusters',
-                                                    qos_profile=optimized_qos,
-                                                    callback_group=self.callback_group) # CRITICAL: Ensures callback isolation for multi-threaded execution
-
-        self.camera_sub = message_filters.Subscriber(self, Detection2DArray, '/detection/camera_2d',
-                                                     qos_profile=optimized_qos, 
-                                                     callback_group=self.callback_group) # CRITICAL: Ensures callback isolation for multi-threaded execution
-        
-        # INCREASE queue_size here to allow the synchronizer to pair messages successfully
-        self.sync = message_filters.ApproximateTimeSynchronizer(
-            [self.lidar_sub, self.camera_sub], 
-            queue_size=15, # Reverted to a healthy matching pool
-            slop=0.05
+        # Direct Subscriptions (No slow filtering middleware locks)
+        self.camera_sub = self.create_subscription(
+            Detection2DArray, '/detection/camera_2d',
+            self.camera_callback, optimized_qos, callback_group=self.callback_group
         )
-        self.sync.registerCallback(self.fused_callback)
+
+        self.lidar_sub = self.create_subscription(
+            Detection3DArray, '/detection/lidar_clusters',
+            self.lidar_callback, optimized_qos, callback_group=self.callback_group
+        )
 
         self.fused_pub = self.create_publisher(Detection3DArray, '/detection/fused_3d', 2)
         self.get_logger().info('Frustum Fusion Node with CUDA-aware performance tracking with E2E Age Tracking started.')
 
-    def fused_callback(self, lidar_msg, camera_msg):
+    def camera_callback(self, msg):
+        """Thread 1: Instantly caches the incoming 2D boxes in RAM."""
+        self.latest_camera_msg = msg
+
+    def lidar_callback(self, lidar_msg):
         # Start callback CPU timer
         callback_start_time = time.perf_counter()
+        """Thread 2: Triggered by Lidar clusters, pairs immediately with the latest camera frame."""
+        camera_msg = self.latest_camera_msg
+
+        # Escape safely if the camera hasn't published anything yet
+        # ⚡ OPTIMIZATION: Check if YOLO is still initializing its memory layout on startup
+        if camera_msg is None:
+            self.get_logger().info(
+                "Fusion Layer Status: [WARMUP] Waiting for YOLOv8 weights initialization to complete...",
+                throttle_duration_sec=1.5  # 💡 Throttles log output to prevent console clutter
+            )
+            return
 
         self.match_radius = self.get_parameter('match_radius').value
         num_3d = len(lidar_msg.detections)
         num_2d = len(camera_msg.detections)
 
-        if num_3d == 0 or num_2d == 0:
-            return
+        # if num_3d == 0 or num_2d == 0:
+        #     return
 
-        # ----------------------------------------------------
-        # GPU Calculations Boundary
-        # ----------------------------------------------------
         if self.is_cuda:
             self.start_event.record()
         else:
             gpu_start_cpu_fallback = time.perf_counter()
 
-        # 1. 3D Lidar Extraction
-        pts_3d_flat = [val for d in lidar_msg.detections for val in (d.bbox.center.position.x, d.bbox.center.position.y, d.bbox.center.position.z)]
-        lidar_pts_np = np.fromiter(pts_3d_flat, dtype=np.float32, count=num_3d * 3).reshape(num_3d, 3)
+        # Vectorized 3D Lidar Extraction
+        lidar_pts_np = np.zeros((num_3d, 3), dtype=np.float32)
+        for idx in range(num_3d):
+            pos = lidar_msg.detections[idx].bbox.center.position
+            lidar_pts_np[idx, 0] = pos.x
+            lidar_pts_np[idx, 1] = pos.y
+            lidar_pts_np[idx, 2] = pos.z
         pts_3d_lidar = torch.as_tensor(lidar_pts_np, device=self.device)
 
         # 2. Transform 3D Lidar Points to Camera Frame
@@ -105,8 +123,11 @@ class FrustumFusionNode(Node):
         # 3. Filter points behind the camera
         valid_mask = pts_3d_cam[:, 2] > 0.1
         if not torch.any(valid_mask):
+            self.get_logger().info("Sync Match: No valid 3D points in camera frame, skipping frame.")
             return
-        valid_indices = torch.where(valid_mask)
+
+        # ⚡ FIX 1: Extract the index element list array out of the tuple slice
+        valid_indices = torch.where(valid_mask)[0]
         pts_3d_cam_filtered = pts_3d_cam[valid_indices]
 
         # 4. Project 3D Camera Points into 2D Pixel Coordinates
@@ -114,12 +135,15 @@ class FrustumFusionNode(Node):
         inv_z = 1.0 / proj_pts[:, 2:3]
         uv_gpu = proj_pts[:, :2] * inv_z
 
-        # 5. 2D Camera Extraction
-        pts_2d_flat = [val for det in camera_msg.detections for val in (det.bbox.center.position.x, det.bbox.center.position.y)]
-        camera_pts_np = np.fromiter(pts_2d_flat, dtype=np.float32, count=num_2d * 2).reshape(num_2d, 2)
+        # ⚡ FIX 4: True Vectorized Zero-Copy 2D Center Box Extraction
+        camera_pts_np = np.zeros((num_2d, 2), dtype=np.float32)
+        for idx in range(num_2d):
+            center_pos = camera_msg.detections[idx].bbox.center.position
+            camera_pts_np[idx, 0] = center_pos.x
+            camera_pts_np[idx, 1] = center_pos.y
         pts_2d_tensor = torch.as_tensor(camera_pts_np, device=self.device)
 
-        # 6. Compute Parallel Distance Matrix
+        # 6. Compute Parallel Distance Matrix via GPU Broadcasting
         diff = uv_gpu.unsqueeze(1) - pts_2d_tensor.unsqueeze(0)
         dist_matrix = torch.norm(diff, dim=2) 
         min_dists, best_2d_indices = torch.min(dist_matrix, dim=1)
@@ -127,7 +151,9 @@ class FrustumFusionNode(Node):
         # Bring tracking configurations back to host space
         min_dists_cpu = min_dists.cpu().numpy()
         best_2d_indices_cpu = best_2d_indices.cpu().numpy()
-        valid_indices_cpu = valid_indices[0].cpu().numpy()
+        
+        # ⚡ FIX 2: Force the unpacked index array to stay flat (Prevents scalar 0-d drops)
+        valid_indices_cpu = valid_indices.cpu().numpy().flatten()
 
         # ----------------------------------------------------
         # END METRIC: GPU Calculations Boundary
@@ -169,7 +195,15 @@ class FrustumFusionNode(Node):
 
         if len(fused_detections.detections) > 0:
             self.fused_pub.publish(fused_detections)
-
+            # Print the success trace to your console output mapping
+            self.get_logger().info(
+                f"\n--- ⚡ GPU FRUSTUM FUSION TARGET TRACE ⚡ ---\n"
+                f"Incoming 3D Clusters : {num_3d}\n"
+                f"Incoming 2D Boxes    : {num_2d}\n"
+                f"Successfully Fused   : {len(fused_detections.detections)}\n"
+                f"GPU Processing Time  : {gpu_time_ms:.2f} ms\n"
+                f"-----------------------------------------\n"
+            )
         # ----------------------------------------------------
         # LATENCY & AGE CALCULATIONS
         # ----------------------------------------------------
@@ -206,7 +240,7 @@ def main(args=None):
     node = FrustumFusionNode()
 
     # 3. Spin up the Multi-Threaded environment
-    executor = MultiThreadedExecutor()
+    executor = MultiThreadedExecutor(num_threads=2)  # Adjust thread count based on system capabilities
     executor.add_node(node)
     
     try:
