@@ -102,6 +102,20 @@ def generate_launch_description():
                    ]
     )
 
+    # 5. BEV Visualizer Node
+    bev_node = Node(
+            package='kitti_r1_perception',
+            executable='bev_visualizer_node',
+            name='bev_visualizer_node',
+            output='screen',
+            parameters=[{'use_sim_time': True}],
+            arguments=['--ros-args',
+                       '--log-level',
+                       LaunchConfiguration('log_level'),
+                       '--log-file-name', 'bev_visualizer_node.log'
+                       ]
+        )
+
     # RViz2 Node
     rviz_config_file = PathJoinSubstitution([
         FindPackageShare('kitti_r1_description'),
@@ -113,11 +127,13 @@ def generate_launch_description():
         package='rviz2',
         executable='rviz2',
         name='rviz2',
-        output='screen',
-        arguments=['-d', rviz_config_file],
+        output='screen',        
         # ⚡ FIX 1: Replaced the undefined 'sim_time_param' variable with a clean dictionary format block
-        parameters=[{'use_sim_time': sim_time_config}]
-    )
+        parameters=[{'use_sim_time': sim_time_config}],
+        arguments=['-d', rviz_config_file,
+                   '--ros-args', '--log-level', LaunchConfiguration('log_level'),
+                   '--log-file-name', 'rviz2.log'
+        ])
 
     # Static transform publishers
     map_to_velodyne_tf_publisher = Node(
@@ -183,6 +199,7 @@ def generate_launch_description():
         lidar_node,
         camera_node,
         fusion_node,
+        bev_node,
         map_to_velodyne_tf_publisher,
         map_to_camera_tf_publisher,
         rviz_node,
