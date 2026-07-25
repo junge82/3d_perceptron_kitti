@@ -164,7 +164,6 @@ class FrustumFusionNode(Node):
             gpu_time_ms = self.start_event.elapsed_time(self.end_event)
         else:
             gpu_time_ms = (time.perf_counter() - gpu_start_cpu_fallback) * 1000.0
-
         # 7. Construct final fused message
         fused_detections = Detection3DArray()
         fused_detections.header = lidar_msg.header
@@ -174,28 +173,40 @@ class FrustumFusionNode(Node):
                 det_3d = lidar_msg.detections[lidar_idx]
                 best_match_2d = camera_msg.detections[best_2d_indices_cpu[i]]
 
+                # 1. Unpack real-world physical boundaries from the LiDAR box
+                sx = det_3d.bbox.size.x  # Longitudinal size (Length)
+                sy = det_3d.bbox.size.y  # Lateral size (Width)
+                sz = det_3d.bbox.size.z  # Vertical size (Height)
+                
+                # 2. Compute advanced geometric ratios [1]
+                # A car footprint area is large; a bike is a narrow line strip [1]
+                horizontal_footprint_area = sx * sy
+                aspect_ratio = max(sx, sy) / max(min(sx, sy), 0.001) # Length-to-width ratio
+                
                 # Clear previous results to prevent stacking duplicates
                 det_3d.results = []
 
                 for res_2d in best_match_2d.results:
                     inst_hypothesis = ObjectHypothesisWithPose()
                     
-                    # Safely handle both Humble and Jazzy vision_msgs variants
+                    # Unpack raw class assignment string primitive from camera tracking
                     if hasattr(res_2d, 'hypothesis'):
-                        inst_hypothesis.hypothesis.class_id = res_2d.hypothesis.class_id
-                        inst_hypothesis.hypothesis.score = res_2d.hypothesis.score
+                        camera_class = int(res_2d.hypothesis.class_id)
+                        score = res_2d.hypothesis.score
                     else:
-                        # Direct property fallback
-                        inst_hypothesis.class_id = res_2d.class_id
-                        inst_hypothesis.score = res_2d.score
+                        camera_class = int(res_2d.class_id)
+                        score = res_2d.score
+
+                    self.box_class_det(sx, sy, horizontal_footprint_area, aspect_ratio, inst_hypothesis, camera_class, score)
                         
                     det_3d.results.append(inst_hypothesis)
 
+                # Append the verified detection to the publishing queue
                 fused_detections.detections.append(det_3d)
 
+        # Publish results if any objects were successfully projected and tracked
         if len(fused_detections.detections) > 0:
             self.fused_pub.publish(fused_detections)
-            # Print the success trace to your console output mapping
             self.get_logger().info(
                 f"\n--- ⚡ GPU FRUSTUM FUSION TARGET TRACE ⚡ ---\n"
                 f"Incoming 3D Clusters : {num_3d}\n"
@@ -234,6 +245,46 @@ class FrustumFusionNode(Node):
             f"Synchronizer Slop  : {sync_slop_ms:.2f}ms\n"
             f"End-to-End Stack Age: LiDAR E2E: {lidar_e2e_age_ms:.2f}ms | Camera E2E: {camera_e2e_age_ms:.2f}ms"
         )
+
+    def box_class_det(self, sx, sy, horizontal_footprint_area, aspect_ratio, inst_hypothesis, camera_class, score):
+        # --- 3D BOUNDING BOX VOLUME SANITY FILTERS ---
+        # Standard KITTI Volumetric Limits:
+        # Pedestrian Volume: ~0.4m x 0.4m x 1.7m = ~0.3 m³ (Rarely exceeds 1.0 m³)
+        # Car Volume: ~4.0m x 1.6m x 1.5m = ~9.6 m³ (Rarely drops below 3.5 m³)
+
+        # --- ADVANCED CYCLIST VS CAR ANTI-MIXING FILTERS ---
+        # CASE A: Camera claims CAR (0), but it is physically a CYCLIST
+        if camera_class == 0:
+            # If the cluster width is extremely narrow (< 0.85m) or the total 
+            # footprint is tiny, it physically CANNOT be a car engine box.
+            if sy < 0.85 or horizontal_footprint_area < 1.5:
+                # If it is narrow and elongated, it is a Cyclist [1]
+                if aspect_ratio >= 1.5:
+                    camera_class = 2  # Override to Cyclist
+                else:
+                    camera_class = 1  # Override to Pedestrian (square-ish footprint)
+
+        # CASE B: Camera claims CYCLIST (2), but it is physically a CAR
+        elif camera_class == 2:
+            # A cyclist is never 3.5+ meters long or wider than 1.1 meters.
+            # If the horizontal footprint area is huge, it is a vehicle platform.
+            if horizontal_footprint_area > 2.8 or sx > 2.8 or sy > 1.1:
+                camera_class = 0  # Override to Car
+
+        # CASE C: Camera claims PEDESTRIAN (1), but it is a CAR or CYCLIST
+        elif camera_class == 1:
+            if horizontal_footprint_area > 2.8 or sx > 2.8:
+                camera_class = 0  # Override to Car
+            elif sy < 0.85 and aspect_ratio >= 1.5:
+                camera_class = 2  # Override to Cyclist
+
+        # Write clean primitive string values out to the destination msg layout
+        if hasattr(inst_hypothesis, 'hypothesis'):
+            inst_hypothesis.hypothesis.class_id = str(camera_class)
+            inst_hypothesis.hypothesis.score = score
+        else:
+            inst_hypothesis.class_id = str(camera_class)
+            inst_hypothesis.score = score
 
 def main(args=None):
     rclpy.init(args=args)
