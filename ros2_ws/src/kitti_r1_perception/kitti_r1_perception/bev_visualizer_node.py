@@ -1,4 +1,5 @@
 import rclpy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rclpy.node import Node
 from sensor_msgs_py import point_cloud2
 from sensor_msgs.msg import PointCloud2, Image
@@ -25,15 +26,30 @@ class BEVVisualizerNode(Node):
         self.height = int(2 * self.range_x / self.resolution)
         
         self.bridge = CvBridge()
+
+        # QoS for incoming LiDAR and Fused 3D bounding boxes
+        bev_sub_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,   # Must match upstream publishers!
+            history=HistoryPolicy.KEEP_LAST,
+            depth=2                                   # Small buffer to prevent lockouts during high load
+        )
         
         # Subscriptions
-        self.lidar_sub = self.create_subscription(PointCloud2, '/kitti/velodyne/pointcloud', self.lidar_callback, 10)
-        self.fused_sub = self.create_subscription(Detection3DArray, '/detection/fused_3d', self.fused_callback, 10)
+        self.lidar_sub = self.create_subscription(PointCloud2, '/kitti/velodyne/pointcloud', self.lidar_callback, bev_sub_qos)
+        self.fused_sub = self.create_subscription(Detection3DArray, '/detection/fused_3d', self.fused_callback, bev_sub_qos)
         
         self.latest_fused = None
+
+        # QoS for publishing your final visualization image to RViz2
+        bev_pub_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE, # Images to RViz can be dropped to save bandwidth
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            durability=DurabilityPolicy.VOLATILE
+        )
         
         # Publisher
-        self.bev_pub = self.create_publisher(Image, '/visualization/bev_image', 10)
+        self.bev_pub = self.create_publisher(Image, '/visualization/bev_image', bev_pub_qos)
         
         self.get_logger().info(f'BEV Visualizer Node started. Image size: {self.width}x{self.height}')
 
