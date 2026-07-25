@@ -28,37 +28,49 @@ colcon-ros = ">=0.5.0,<0.6"
 colcon-common-extensions = ">=0.3.0,<0.4"
 
 # Cross-platform dependencies
+python = ">=3.12,<3.13"
 ultralytics = "*"
 numpy = "*"
 opencv = ">=4.12.0,<5"
 transforms3d = ">=0.4.2"
-torchvision = "=0.25"
+torchvision = ">=0.25.0,<0.26.0"
+
+# 👇 ADD THESE TWO ENTITIES TO BIND EXPORT COMPILER BINARIES
+onnx = ">=1.16.0"
+onnxslim = ">=0.1.80"
+
+
+# ROSs JAZZY
 ros-jazzy-rosbag2 = ">=0.26.9,<0.27"
 ros-jazzy-rosbag2-storage-mcap = ">=0.26.9,<0.27"
 ros-jazzy-joint-state-publisher = ">=2.4.1,<3"
 ros-jazzy-joint-state-publisher-gui = ">=2.4.1,<3"
 
-# 2. Let conda-forge handle modern CUDA bindings automatically via pytorch-gpu
+# 2. PIN PYTORCH CORE TO ALIGN SPECIFICALLY WITH THE VISION BINDING Above
 [target.linux-64.dependencies]
-pytorch-gpu = ">=2.5.1"
+pytorch-gpu = ">=2.10.0,<2.11.0"
 
 [target.win-64.dependencies]
-pytorch-gpu = ">=2.5.1"
+pytorch-gpu = ">=2.10.0,<2.11.0"
 
-# 4. Use PyPI wheels on Linux and Windows to enable CUDA support
+# 2. UPDATE PYPI WHEEL SPECS WITH EXACT ORT BINDINGS
 [target.linux-64.pypi-dependencies]
 open3d = "*"
+# Force the explicit CUDA-12 compatible runtime wheel release
+onnxruntime-gpu = "==1.20.1"
 
 [target.win-64.pypi-dependencies]
 open3d = "*"
+# Force Windows to grab the exact matching compiled layout
+onnxruntime-gpu = "==1.20.1"
 
 # 5. Quick GPU test tasks
 [tasks]
-# 1. Warm up the NVME cache by reading heavy libraries sequentially into RAM
+# 1. Warm up the NVME cache
 warmup = { cmd = "python -c \"import open3d, sklearn, pandas, torch, ultralytics; print('--- HDD Cache Warmup Complete ---')\"" }
 
-# 2. Run the pipeline with custom log file output mapping inside an explicit Bash shell
-run-pipeline = { cmd = "bash -c 'export PYTHONUNBUFFERED=1 && colcon build --symlink-install && source install/setup.bash && ros2 launch kitti_r1_perception myperception.launch.py playback_delay:=8.0 2>&1 | tee pipeline_session.log'", depends-on = ["warmup"] }
+# 2. Add the strict GPU validation check
+validate-gpu = { cmd = "python validate_pipeline_gpu.py", depends-on = ["warmup"] }
 
-# 3. Keep your existing GPU check
-test-gpu = { cmd = "python -c \"import open3d as o3d; print('Open3D CUDA available:', o3d.core.cuda.is_available() if hasattr(o3d, 'core') else 'Check open3d.core'); import torch; print('PyTorch CUDA available:', torch.cuda.is_available())\"" }
+# 3. Block your pipeline run until validation completely passes
+run-pipeline = { cmd = "bash -c 'export PYTHONUNBUFFERED=1 && colcon build --symlink-install && source install/setup.bash && ros2 launch kitti_r1_perception myperception.launch.py playback_delay:=8.0 2>&1 | tee pipeline_session.log'", depends-on = ["validate-gpu"] }
