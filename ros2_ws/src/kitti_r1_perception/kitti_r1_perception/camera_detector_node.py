@@ -1,21 +1,21 @@
 import os
 import sys
+import time
+import cv2
 import numpy as np
-import torch
-from ultralytics import YOLO
-from cv_bridge import CvBridge
+import onnxruntime as ort
+
 import rclpy
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from ament_index_python.packages import get_package_share_directory
 from sensor_msgs.msg import Image
 from vision_msgs.msg import Detection2DArray, Detection2D, ObjectHypothesisWithPose
 from cv_bridge import CvBridge
-from ultralytics import YOLO
+
 import cv2
-import torch
 import time
 import os
 import matplotlib.pyplot as plt
@@ -26,246 +26,216 @@ class CameraDetectorNode(Node):
 
     def __init__(self):
         super().__init__('camera_detector_node')
-         # ⚡ CRITICAL TIME FIX 1: Enforce simulation clock tracking immediately
+        
+        # ⚡ FORCE SIMULATION TIME
         self.set_parameters([
             rclpy.parameter.Parameter('use_sim_time', rclpy.parameter.Parameter.Type.BOOL, True)
         ])
-        self.last_img_shape = None
-
-        # Use unbuffered sys.stdout to ensure prints bypass launch file buffers immediately
-        sys.stdout.reconfigure(line_buffering=True)
         
+        sys.stdout.reconfigure(line_buffering=True)
         self.callback_group = MutuallyExclusiveCallbackGroup()
         self.bridge = CvBridge()
         
-        # Latency lists for post-run distribution plotting
-        self.inference_latencies = []
-        self.total_latencies = []
-        
-        # Parameters (Declared in main init scope)
+        # Parameters
         self.declare_parameter('model_version', 'yolov8n') 
         self.declare_parameter('conf_threshold', 0.25)
+        self.declare_parameter('iou_threshold', 0.45)
+        
         self.conf_threshold = self.get_parameter('conf_threshold').value
+        self.iou_threshold = self.get_parameter('iou_threshold').value
+        
+        # Single-shot warmup configuration timer
+        self.init_timer = self.create_timer(0.1, self.async_model_init)
+    
+    def async_model_init(self):
+        self.init_timer.cancel()
+        
+        # Resolve package directories safely
+        self.package_share_dir = get_package_share_directory('kitti_r1_perception')
+        self.torch_home_dir = os.path.join(self.package_share_dir, 'torch_home')
+        os.environ['TORCH_HOME'] = self.torch_home_dir
+        
+        model_ver = self.get_parameter('model_version').value
+        model_path = os.path.join(self.torch_home_dir, f"{model_ver}.onnx")
+        
+        if not os.path.exists(model_path):
+            self.get_logger().error(f"ONNX Model missing! Expected at: {model_path}. Please export it first.")
+            return
 
-        self.realtime_qos = QoSProfile(
+        # ⚡ INITIALIZE HIGH-SPEED ONNX CUDA ENGINE
+        opts = ort.SessionOptions()
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        
+        # ⚡ TARGET RTX 4060 TENSOR CORES DIRECTLY
+        providers = [
+            ('TensorrtExecutionProvider', {
+                'device_id': 0,
+                'trt_fp16_enable': True,          # Maximize 4060 FP16 Tensor Core throughput
+                'trt_max_workspace_size': 2 * 1024 * 1024 * 1024, # 2GB Workspace cache
+                'trt_engine_cache_enable': True,  # Cache engine so startup is instant next time
+                'trt_engine_cache_path': self.torch_home_dir
+            }),
+            ('CUDAExecutionProvider', {
+                'device_id': 0,
+            }),
+            'CPUExecutionProvider'
+        ]
+        
+        self.session = ort.InferenceSession(model_path, sess_options=opts, providers=providers)
+        self.input_name = self.session.get_inputs()[0].name
+        self.get_logger().info(f"ONNX Runtime successfully bound execution targets: {self.session.get_providers()}")
+        
+        # Hardcoded class color tracking arrays for instant layout lookups
+        np.random.seed(42)
+        self.colors = np.random.randint(0, 255, size=(80, 3), dtype=np.uint8)
+
+        # Build Standard Real-time QoS Constraints
+        realtime_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE, 
             history=HistoryPolicy.KEEP_LAST,
             depth=1
         )
 
-        # 2. DO NOT load the model here. Instead, create a one-shot timer 
-        # This allows the node to register with ROS instantly without blocking
-        self.init_timer = self.create_timer(0.1, self.async_model_init)
-
-    
-    def async_model_init(self):
-        # Cancel the timer immediately so it only runs once
-        self.init_timer.cancel()
-
-        # 1. Directly resolve the path (will raise a clean PackageNotFoundError if missing)
-        self.package_share_dir = get_package_share_directory('kitti_r1_perception')
-
-        # 2. Define and set the torch home environment variable
-        self.torch_home_dir = os.path.join(self.package_share_dir, 'torch_home')
-        os.environ['TORCH_HOME'] = self.torch_home_dir
-        self.get_logger().info(f"Set TORCH_HOME to: {self.torch_home_dir}")
-
-        model_ver = self.get_parameter('model_version').value
-        self.conf_threshold = self.get_parameter('conf_threshold').value
-
-        # Prefer model file inside TORCH_HOME to leverage local cache/store
-        model_filename = f"{model_ver}.pt"
-        model_path_local = os.path.join(self.torch_home_dir, model_filename)
-        if os.path.exists(model_path_local):
-            model_path = model_path_local
-        else:
-            # fallback to simple name which lets ultralytics attempt download or resolve
-            model_path = model_filename
-
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.get_logger().info(f"Using device: {self.device}")
-
-        # ----------------------------------------------------------------------
-        # ⚡ HIGH-SPEED PT LOADING OPTIMIZATION
-        # ----------------------------------------------------------------------
-        if self.device == 'cuda':
-            # 1. Warm up the CUDA context immediately *before* disk reads hit
-            torch.cuda.init()
-            
-            # 2. Tell PyTorch's backend allocator to expect immediate sequentially-read weights
-            torch.backends.cudnn.benchmark = True
-            
-            try:
-                # 3. Initialize model structure cleanly without unsupported kwargs
-                self.model = YOLO(model_path)
-                
-                # 4. Explicitly move weights onto the RTX 4060 VRAM using non-blocking memory pinning
-                self.model.to(self.device)
-                self.get_logger().info('Direct NVMe-to-VRAM context optimization applied successfully.')
-            except Exception as e:
-                # Fallback path if custom device mapping fails
-                self.model = YOLO(model_path)
-                self.get_logger().warn(f'Standard initialization fallback triggered: {str(e)}')
-        else:
-            self.model = YOLO(model_path)
-            
-        self.is_cuda = (self.device == 'cuda')
-        self.class_names = self.model.names
-
-        # ----------------------------------------------------------------------
-        # ⚡ FIX: DEEP LEARNING GRAPH COMPILATION WARMUP
-        # ----------------------------------------------------------------------
-        try:
-            self.get_logger().info('Compiling CUDA Graph pipelines for YOLOv8 inference maps...')
-            # Generate a blank matrix mimicking the layout dimensions of the camera
-            blank_warmup_img = np.zeros((384, 1248, 3), dtype=np.uint8)
-
-            # ⚡ CRITICAL FIX: Pass structural dimensions explicitly as [Height, Width] 
-            # rounded up to the nearest multiple of 32 (374->384, 1238->1248) to keep CUDA graph stable
-            self.target_imgsz = [384, 1248]
-            
-            # ⚡ CRITICAL FIX: Pass structural dimensions explicitly using imgsz=640
-            _ = self.model.predict(
-                blank_warmup_img, 
-                conf=self.conf_threshold, 
-                imgsz=self.target_imgsz, 
-                verbose=False, 
-                device=self.device
-            )
-            
-            if self.is_cuda:
-                torch.cuda.synchronize()
-            self.get_logger().info('YOLOv8 compiler graph tracks loaded successfully.')
-        except Exception as e:
-            self.get_logger().warn(f'Camera initialization warmup bypassed: {str(e)}')
-
-        # ----------------------------------------------------------------------
-        # Subscription & Publishers (Open only *after* warmup is complete)
-        # ----------------------------------------------------------------------
+        # Define ROS infrastructure endpoints
         self.subscription = self.create_subscription(
-            Image,
-            '/kitti/camera_left/image_raw',
-            self.listener_callback,
-            self.realtime_qos,
-            callback_group=self.callback_group
+            Image, '/kitti/camera_left/image_raw', self.listener_callback, realtime_qos, callback_group=self.callback_group
         )
- 
-        # Publishers
-        self.detection_pub = self.create_publisher(Detection2DArray, '/detection/camera_2d', self.realtime_qos)
-        self.annotated_pub = self.create_publisher(Image, '/detection/camera_annotated', self.realtime_qos)
-        self.get_logger().info(f'Camera Detector Node started with model: {model_path}')
+        self.detection_pub = self.create_publisher(Detection2DArray, '/detection/camera_2d', realtime_qos)
+        self.annotated_pub = self.create_publisher(Image, '/detection/camera_annotated', realtime_qos)
+        self.get_logger().info('ONNX Multi-Shape Perception Pipeline Activated Successfully.')
+
+    def multiclass_nms(self, boxes, scores, class_ids):
+        """Ultra-fast vectorized Non-Maximum Suppression engine using OpenCV."""
+        indices = cv2.dnn.NMSBoxes(
+            boxes.tolist(), 
+            scores.tolist(), 
+            float(self.conf_threshold), 
+            float(self.iou_threshold)
+        )
+        if len(indices) > 0:
+            return indices.flatten()
+        return []
 
     def listener_callback(self, msg):
         node_start_time = time.perf_counter()
-
-        # ⚡ TIME FIX: Calculate Pre-Callback Age using the integrated node clock
-        # This respects bag file time when '--clock' is supplied to ros2 bag play
+        
+        # Calculate Simulation Clock Pre-Callback Age
         now = self.get_clock().now()
         msg_time = rclpy.time.Time.from_msg(msg.header.stamp)
         data_age_ms = (now - msg_time).nanoseconds / 1e6
-
-        # Convert image and run inference
+        
+        # Parse image from message payload
         cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
 
-        # ⚡ SHAPE MONITOR: Validate image size continuity across incoming frames
-        current_shape = cv_image.shape  # Returns tuple: (Height, Width, Channels)
+        # ⚡ TARGET SIZE ALIGNMENT: Match your exact exported baseline shape
+        # This takes <0.5ms and prevents any potential dynamic axis rounding errors
+        cv_image_resized = cv2.resize(cv_image, (1248, 384), interpolation=cv2.INTER_LINEAR)
 
-        if self.last_img_shape is None:
-            self.last_img_shape = current_shape
-            self.get_logger().info(f"Initial image resolution baseline established: {current_shape}")
-        elif current_shape != self.last_img_shape:
-            self.get_logger().warn(
-                f"🚨 DYNAMIC SHAPE DETECTED! Resolution changed from {self.last_img_shape} to {current_shape}. "
-                f"This variance will break CUDA Graph performance mappings."
-            )
-            self.last_img_shape = current_shape  # Update tracking state to suppress continuous spam
+        h_orig, w_orig, _ = cv_image_resized.shape
 
-        # Start high-res system timing for CUDA workload operations
+        # ⚡ ONNX INPUT PREPARATION: Zero-copy operations 
+        # Convert image matrix layout tracking configurations to match ONNX constraints
+        img_rgb = cv2.cvtColor(cv_image_resized, cv2.COLOR_BGR2RGB)
+        img_chw = img_rgb.transpose((2, 0, 1)) # HWC to CHW
+        img_norm = np.ascontiguousarray(img_chw, dtype=np.float32) / 255.0
+        img_tensor = np.expand_dims(img_norm, axis=0) # Shape: [1, 3, H, W]
+
+        # Execute ONNX forward execution map
         inference_start = time.perf_counter()
-
-        # ⚡ CRITICAL FIX: Ensure predictable matrix structures by forcing imgsz matching your warmup
-        results = self.model.predict(
-            cv_image, 
-            conf=self.conf_threshold, 
-            imgsz=self.target_imgsz,  # Explicitly match the warmup dimensions to prevent CUDA graph instability
-            verbose=False, 
-            device=self.device
-        )
-        if self.is_cuda:
-            torch.cuda.synchronize()
-
-        # Calculate absolute hardware inference duration
+        outputs = self.session.run(None, {self.input_name: img_tensor})
         inference_time_ms = (time.perf_counter() - inference_start) * 1000.0
 
-        # Save metrics for our distribution curves
-        self.inference_latencies.append(inference_time_ms)
-
-        # Prepare Detection2DArray
+        # Decode YOLO raw structural matrices [1, 84, Anchors]
+        predictions = np.squeeze(outputs[0]).T # Reshapes matrix to [Anchors, 84]
+        
+        # Filter baseline row indices passing minimum score threshold targets
+        scores_matrix = predictions[:, 4:]
+        max_scores = np.max(scores_matrix, axis=1)
+        valid_mask = max_scores > self.conf_threshold
+        
+        filtered_preds = predictions[valid_mask]
+        
         detections = Detection2DArray()
         detections.header = msg.header
-        
-        # Track if we have active targets
-        has_boxes = len(results) > 0 and len(results[0].boxes) > 0
+        annotated_frame = cv_image.copy()
 
-        # 3. CPU Offload: Extract bulk tensors directly from GPU with proper ROS type alignment
-        if has_boxes:
-            boxes = results[0].boxes
-            xywh_all = boxes.xywh.cpu().numpy()       # [center_x, center_y, width, height]
-            cls_all = boxes.cls.cpu().numpy().astype(int)
-            conf_all = boxes.conf.cpu().numpy()
-
-            for idx in range(len(xywh_all)):
+        if len(filtered_preds) > 0:
+            # Step 1: Decode predictions box formats
+            # Raw boxes output format is [center_x, center_y, width, height] relative to the input image size
+            cx = filtered_preds[:, 0]
+            cy = filtered_preds[:, 1]
+            w  = filtered_preds[:, 2]
+            h  = filtered_preds[:, 3]
+            
+            # Recompute target tracking points to fulfill OpenCV top-left bounding box formats
+            x1 = cx - (w / 2)
+            y1 = cy - (h / 2)
+            
+            box_array = np.stack([x1, y1, w, h], axis=1)
+            score_array = np.max(filtered_preds[:, 4:], axis=1)
+            class_array = np.argmax(filtered_preds[:, 4:], axis=1)
+            
+            # Step 2: Filter overlapped predictions via Vectorized NMS Engine
+            keep_indices = self.multiclass_nms(box_array, score_array, class_array)
+            
+            # Step 3: Populate arrays and draw boxes simultaneously
+            for idx in keep_indices:
+                box = box_array[idx]
+                score = float(score_array[idx])
+                cls_id = int(class_array[idx])
+                
+                # Extract absolute bounding box dimensions
+                bx, by, bw, bh = float(box[0]), float(box[1]), float(box[2]), float(box[3])
+                
+                # 1. Populate standard ROS target array matrices
                 detection = Detection2D()
                 detection.header = msg.header
-                
-                # Assign values directly - standardizing center tracking positions
-                detection.bbox.center.position.x = float(xywh_all[idx, 0])
-                detection.bbox.center.position.y = float(xywh_all[idx, 1])
-                
-                # Standard ROS 2 dimensions mapping (Full Width & Height)
-                detection.bbox.size_x = float(xywh_all[idx, 2])
-                detection.bbox.size_y = float(xywh_all[idx, 3])
+                detection.bbox.center.position.x = bx + (bw / 2.0)
+                detection.bbox.center.position.y = by + (bh / 2.0)
+                detection.bbox.size_x = bw
+                detection.bbox.size_y = bh
                 
                 hypothesis = ObjectHypothesisWithPose()
-                
-                # ⚡ CRITICAL FIX: Convert integer ID to standard string index to prevent ROS serialization crashes
-                hypothesis.hypothesis.class_id = str(cls_all[idx]) 
-                hypothesis.hypothesis.score = float(conf_all[idx])
-                
+                hypothesis.hypothesis.class_id = str(cls_id)
+                hypothesis.hypothesis.score = score
                 detection.results.append(hypothesis)
                 detections.detections.append(detection)
+                
+                # 2. ⚡ LIGHT-SPEED VISUALIZATION: Vector draw directly onto baseline array
+                color = [int(c) for c in self.colors[cls_id % 80]]
+                p1 = (int(bx), int(by))
+                p2 = (int(bx + bw), int(by + bh))
+                
+                # Draw outer bounding boxes
+                cv2.rectangle(annotated_frame, p1, p2, color, thickness=2)
+                
+                # Overlay tiny target label tags
+                label_text = f"ID:{cls_id} {score:.2f}"
+                cv2.putText(annotated_frame, label_text, (p1[0], max(p1[1] - 5, 0)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, thickness=1, lineType=cv2.LINE_AA)
 
-        # Publish results
+        # Publish Output coordinate indices array
         self.detection_pub.publish(detections)
         
-        # 4. FIXED VISUALIZATION: Safe unconditional plotting with empty detection guard
+        # Convert annotated frame matrix back to ROS image format
         try:
-            if has_boxes:
-                # Render detected overlay tracking masks
-                annotated_frame = results[0].plot()
-            else:
-                # Safe Fallback: Publish the raw input image if zero targets exist
-                annotated_frame = cv_image
-                
-            annotated_msg = self.bridge.cv2_to_imgmsg(annotated_frame, "bgr8")
+            annotated_msg = self.bridge.cv2_to_imgmsg(annotated_frame, encoding="bgr8")
             annotated_msg.header = msg.header
             self.annotated_pub.publish(annotated_msg)
         except Exception as e:
-            self.get_logger().error(f'Failed to convert annotated image: {e}')
+            self.get_logger().error(f'Failed to translate image arrays: {e}')
 
-        # Calculate absolute total execution timeline cost
+        # Log complete pipeline performance costs
         node_time_ms = (time.perf_counter() - node_start_time) * 1000.0
-        self.total_latencies.append(node_time_ms)
-        num_detections = len(detections.detections)
-
+        
         self.get_logger().info(
-            f"\n--- CAMERA PERFORMANCE PROFILE ---\n"
-            f"Detected Objects    : {num_detections}\n"
-            f"Pre-Callback Age    : {data_age_ms:.2f}ms\n"
-            f"Pure YOLO Inference : {inference_time_ms:.2f}ms\n"
-            f"Total Callback Cost : {node_time_ms:.2f}ms"
+            f"\n--- ONNX CAMERA PERFORMANCE PROFILE ---\n"
+            f"Input Frame Resolution: {w_orig}x{h_orig}\n"
+            f"Detected Objects      : {len(detections.detections)}\n"
+            f"Pre-Callback Age      : {data_age_ms:.2f}ms\n"
+            f"Pure ONNX Inference   : {inference_time_ms:.2f}ms\n"
+            f"Total Callback Cost   : {node_time_ms:.2f}ms"
         )
-
     def save_latency_distribution_plot(self):
         """ METHOD 3: Saves a latency histogram plot inside the dynamic package folder """
         if not self.total_latencies:
@@ -313,3 +283,4 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+

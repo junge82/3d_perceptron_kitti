@@ -75,7 +75,7 @@ def generate_launch_description():
         output='screen',
         emulate_tty=True,
         additional_env={'PYTORCH_CUDA_ALLOC_CONF': 'max_split_size_mb:128',
-                        'TORCH_CUDA_ARCH_LIST': '8.6+PTX',
+                        'TORCH_CUDA_ARCH_LIST': '8.9+PTX',
                         'TORCH_HOME': os.path.join(get_package_share_directory('kitti_r1_perception'), 'models'),
                         'PYTHONUNBUFFERED': '1'
                         },
