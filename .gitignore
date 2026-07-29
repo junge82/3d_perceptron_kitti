@@ -20,7 +20,7 @@ log/
 
 # Manually cloned dependencies (built from source)
 ros2_ws/src/vision_msgs/
-
+ros2_ws/src/kitti_r1_perception/torch_home
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

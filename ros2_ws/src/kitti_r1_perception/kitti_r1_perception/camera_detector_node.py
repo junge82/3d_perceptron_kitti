@@ -1,8 +1,15 @@
+import os
+import sys
+import numpy as np
+import torch
+from ultralytics import YOLO
+from cv_bridge import CvBridge
 import rclpy
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from rclpy.node import Node
-from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Image
 from vision_msgs.msg import Detection2DArray, Detection2D, ObjectHypothesisWithPose
 from cv_bridge import CvBridge
@@ -13,18 +20,19 @@ import time
 import os
 import matplotlib.pyplot as plt
 import numpy as np
-
-
 from ament_index_python.packages import get_package_share_directory
 
 class CameraDetectorNode(Node):
+
     def __init__(self):
         super().__init__('camera_detector_node')
-        
-        self.callback_group = MutuallyExclusiveCallbackGroup()
+         # ⚡ CRITICAL TIME FIX 1: Enforce simulation clock tracking immediately
+        self.set_parameters([
+            rclpy.parameter.Parameter('use_sim_time', rclpy.parameter.Parameter.Type.BOOL, True)
+        ])
+        self.last_img_shape = None
 
-         # Use unbuffered sys.stdout to ensure prints bypass launch file buffers immediately
-        import sys
+        # Use unbuffered sys.stdout to ensure prints bypass launch file buffers immediately
         sys.stdout.reconfigure(line_buffering=True)
         
         self.callback_group = MutuallyExclusiveCallbackGroup()
@@ -38,42 +46,33 @@ class CameraDetectorNode(Node):
         self.declare_parameter('model_version', 'yolov8n') 
         self.declare_parameter('conf_threshold', 0.25)
         self.conf_threshold = self.get_parameter('conf_threshold').value
-        
-        self.bridge = CvBridge()
-        
-        # 2. DO NOT load the model here. Instead, create a one-shot timer 
-        # This allows the node to register with ROS instantly without blocking
-        self.init_timer = self.create_timer(0.1, self.async_model_init)
-    
-    def async_model_init(self):
-        # Cancel the timer immediately so it only runs once
-        self.init_timer.cancel()
 
-        try:
-            self.package_share_dir = get_package_share_directory('kitti_r1_perception')
-            self.get_logger().info(f"Resolved package share path: {self.package_share_dir}")
-        except Exception as e:
-            self.package_share_dir = os.getcwd()
-            self.get_logger().warn(f"Failed to resolve package share. Falling back to CWD: {self.package_share_dir}")
-
-        self.torch_home_dir = os.path.join(self.package_share_dir, 'torch_home')
-        os.makedirs(self.torch_home_dir, exist_ok=True)
-        os.environ['TORCH_HOME'] = self.torch_home_dir
-
-        # Latency lists for post-run distribution plotting
-        self.inference_latencies = []
-        self.total_latencies = []
-        
-        self.get_logger().info(f"Set TORCH_HOME to: {self.torch_home_dir}")
-
-        realtime_qos = QoSProfile(
+        self.realtime_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE, 
             history=HistoryPolicy.KEEP_LAST,
             depth=1
         )
 
+        # 2. DO NOT load the model here. Instead, create a one-shot timer 
+        # This allows the node to register with ROS instantly without blocking
+        self.init_timer = self.create_timer(0.1, self.async_model_init)
+
+    
+    def async_model_init(self):
+        # Cancel the timer immediately so it only runs once
+        self.init_timer.cancel()
+
+        # 1. Directly resolve the path (will raise a clean PackageNotFoundError if missing)
+        self.package_share_dir = get_package_share_directory('kitti_r1_perception')
+
+        # 2. Define and set the torch home environment variable
+        self.torch_home_dir = os.path.join(self.package_share_dir, 'torch_home')
+        os.environ['TORCH_HOME'] = self.torch_home_dir
+        self.get_logger().info(f"Set TORCH_HOME to: {self.torch_home_dir}")
+
         model_ver = self.get_parameter('model_version').value
         self.conf_threshold = self.get_parameter('conf_threshold').value
+
         # Prefer model file inside TORCH_HOME to leverage local cache/store
         model_filename = f"{model_ver}.pt"
         model_path_local = os.path.join(self.torch_home_dir, model_filename)
@@ -84,7 +83,7 @@ class CameraDetectorNode(Node):
             model_path = model_filename
 
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        print(f"Using device: {self.device}")
+        self.get_logger().info(f"Using device: {self.device}")
 
         # ----------------------------------------------------------------------
         # ⚡ HIGH-SPEED PT LOADING OPTIMIZATION
@@ -119,8 +118,21 @@ class CameraDetectorNode(Node):
         try:
             self.get_logger().info('Compiling CUDA Graph pipelines for YOLOv8 inference maps...')
             # Generate a blank matrix mimicking the layout dimensions of the camera
-            blank_warmup_img = np.zeros((640, 640, 3), dtype=np.uint8)
-            _ = self.model.predict(blank_warmup_img, conf=self.conf_threshold, verbose=False, device=self.device)
+            blank_warmup_img = np.zeros((384, 1248, 3), dtype=np.uint8)
+
+            # ⚡ CRITICAL FIX: Pass structural dimensions explicitly as [Height, Width] 
+            # rounded up to the nearest multiple of 32 (374->384, 1238->1248) to keep CUDA graph stable
+            self.target_imgsz = [384, 1248]
+            
+            # ⚡ CRITICAL FIX: Pass structural dimensions explicitly using imgsz=640
+            _ = self.model.predict(
+                blank_warmup_img, 
+                conf=self.conf_threshold, 
+                imgsz=self.target_imgsz, 
+                verbose=False, 
+                device=self.device
+            )
+            
             if self.is_cuda:
                 torch.cuda.synchronize()
             self.get_logger().info('YOLOv8 compiler graph tracks loaded successfully.')
@@ -134,49 +146,55 @@ class CameraDetectorNode(Node):
             Image,
             '/kitti/camera_left/image_raw',
             self.listener_callback,
-            realtime_qos,
+            self.realtime_qos,
             callback_group=self.callback_group
         )
  
         # Publishers
-        self.detection_pub = self.create_publisher(Detection2DArray, '/detection/camera_2d', realtime_qos)
-        self.annotated_pub = self.create_publisher(Image, '/detection/camera_annotated', realtime_qos)
+        self.detection_pub = self.create_publisher(Detection2DArray, '/detection/camera_2d', self.realtime_qos)
+        self.annotated_pub = self.create_publisher(Image, '/detection/camera_annotated', self.realtime_qos)
         self.get_logger().info(f'Camera Detector Node started with model: {model_path}')
 
     def listener_callback(self, msg):
         node_start_time = time.perf_counter()
 
-        # 1. Fetch current time from the node clock instance
+        # ⚡ TIME FIX: Calculate Pre-Callback Age using the integrated node clock
+        # This respects bag file time when '--clock' is supplied to ros2 bag play
         now = self.get_clock().now()
+        msg_time = rclpy.time.Time.from_msg(msg.header.stamp)
+        data_age_ms = (now - msg_time).nanoseconds / 1e6
 
-        # ⚡ FIX: Parse the message stamp cleanly without forcing mismatched clock_type enums
-        msg_stamp = rclpy.time.Time.from_msg(msg.header.stamp)
+        # Convert image and run inference
+        cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
 
-        # Calculate data age safely using matching integer timelines
-        data_age_ms = (now - msg_stamp).nanoseconds / 1e6
+        # ⚡ SHAPE MONITOR: Validate image size continuity across incoming frames
+        current_shape = cv_image.shape  # Returns tuple: (Height, Width, Channels)
 
-        # ⚡ HIGH-SPEED STARTUP BACKLOG FLUSH MECHANIC 
-        # If the image arrived while the model was still loading onto the GPU,
-        # drop it instantly to purge the OS network buffer queue.
-        if data_age_ms > 100.0:
-            return  # Purges stale backlogged frames without running YOLO inference
+        if self.last_img_shape is None:
+            self.last_img_shape = current_shape
+            self.get_logger().info(f"Initial image resolution baseline established: {current_shape}")
+        elif current_shape != self.last_img_shape:
+            self.get_logger().warn(
+                f"🚨 DYNAMIC SHAPE DETECTED! Resolution changed from {self.last_img_shape} to {current_shape}. "
+                f"This variance will break CUDA Graph performance mappings."
+            )
+            self.last_img_shape = current_shape  # Update tracking state to suppress continuous spam
 
-
-        self.conf_threshold = self.get_parameter('conf_threshold').value
-
-        # 1. Convert ROS Image to OpenCV
-        try:
-            cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-        except Exception as e:
-            self.get_logger().error(f'Could not convert image: {e}')
-            return
-
-        # 2. Run Inference
+        # Start high-res system timing for CUDA workload operations
         inference_start = time.perf_counter()
-        results = self.model.predict(cv_image, conf=self.conf_threshold, verbose=False, device=self.device)
-        
+
+        # ⚡ CRITICAL FIX: Ensure predictable matrix structures by forcing imgsz matching your warmup
+        results = self.model.predict(
+            cv_image, 
+            conf=self.conf_threshold, 
+            imgsz=self.target_imgsz,  # Explicitly match the warmup dimensions to prevent CUDA graph instability
+            verbose=False, 
+            device=self.device
+        )
         if self.is_cuda:
-            torch.cuda.synchronize()  
+            torch.cuda.synchronize()
+
+        # Calculate absolute hardware inference duration
         inference_time_ms = (time.perf_counter() - inference_start) * 1000.0
 
         # Save metrics for our distribution curves
@@ -235,6 +253,7 @@ class CameraDetectorNode(Node):
         except Exception as e:
             self.get_logger().error(f'Failed to convert annotated image: {e}')
 
+        # Calculate absolute total execution timeline cost
         node_time_ms = (time.perf_counter() - node_start_time) * 1000.0
         self.total_latencies.append(node_time_ms)
         num_detections = len(detections.detections)
