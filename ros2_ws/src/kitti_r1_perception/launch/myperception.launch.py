@@ -2,7 +2,8 @@ import os
 from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler, OpaqueFunction, TimerAction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler, OpaqueFunction, TimerAction, IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.event_handlers import OnProcessStart
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -65,6 +66,20 @@ def generate_launch_description():
                    '--log-file-name', 'lidar_cluster_node.log'
         ]
     )
+
+    # ⚡ DIRECT PYTHON NODE DECLARATION (FIXED EXECUTABLE NAME)
+    # foxglove_bridge_node = Node(
+    #     package='foxglove_bridge',
+    #     executable='foxglove_bridge',  # ⚡ Fixed from foxglove_bridge_node
+    #     name='foxglove_bridge',
+    #     output='screen',
+    #     parameters=[{
+    #         'use_sim_time': sim_time_config,
+    #         'port': 8765,                 
+    #         'address': '0.0.0.0',         
+    #         'send_buffer_limit': 10000000 
+    #     }]
+    # )
 
     # Camera Detector Node
     camera_node = Node(
@@ -192,12 +207,13 @@ def generate_launch_description():
         play_rate_arg,
         playback_delay_arg,
         log_level_arg,
-        #lidar_node,
+        lidar_node,
         camera_node,
-        #fusion_node,
-        #bev_node,
-        #map_to_velodyne_tf_publisher,
-        #map_to_camera_tf_publisher,
+        # foxglove_bridge_node,
+        fusion_node,
+        bev_node,
+        map_to_velodyne_tf_publisher,
+        map_to_camera_tf_publisher,
         rviz_node,
         OpaqueFunction(function=launch_setup)
     ])

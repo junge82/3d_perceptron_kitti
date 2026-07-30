@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from rclpy.node import Node
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor # ⚡ Changed to SingleThreaded for predictability
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
@@ -60,8 +60,15 @@ class LidarClusterNode(Node):
         self.cluster_pub = self.create_publisher(Detection3DArray, '/detection/lidar_clusters', lidar_qos)
         self.no_ground_pub = self.create_publisher(PointCloud2, '/lidar/points_no_ground', lidar_qos)
         
-        # Configure native Open3D device context targeting your RTX 4060
-        self.device = o3d.core.Device("CUDA:0")
+        # Configure GPU context (Falls back to CPU if Open3D wasn't compiled with CUDA support)
+        try:
+            self.o3d_device = o3d.core.Device("CUDA:0")
+            self.get_logger().info("Successfully bound Open3D to RTX 4060 GPU.")
+        except Exception:
+            self.o3d_device = o3d.core.Device("CPU:0")
+            self.get_logger().warn("CUDA device not supported by Open3D build. Falling back to CPU mode.")
+
+        self.get_logger().info('Lidar Cluster Node Initialized successfully.')
 
         # ⚡ NEW: Complete CPU+GPU pipeline warmup sequence
         self.warmup_gpu()
@@ -87,17 +94,17 @@ class LidarClusterNode(Node):
             )
             dummy_pts = dummy_pts[roi_mask]
 
-            # 3. Force structural allocation on the RTX 4060
-            o3d_points = o3d.core.Tensor(dummy_pts, dtype=o3d.core.float32, device=self.device)
-            pcd_gpu = o3d.t.geometry.PointCloud(o3d_points)
-            
+            # 3. ⚡ FIXED: Correct Open3D Tensor assignment syntax
+            pcd_gpu = o3d.t.geometry.PointCloud(device=self.o3d_device)
+            pcd_gpu.point["positions"] = o3d.core.Tensor(dummy_pts, dtype=o3d.core.float32, device=self.o3d_device)
+
             # 4. Correct Open3D Tensor API call order (distance_threshold, ransac_n, num_iterations)
             pcd_down = pcd_gpu.voxel_down_sample(voxel_size=self.voxel_size)
             _, inliers = pcd_down.segment_plane(self.ground_dist, 3, 30)
-            
+
             pcd_no_ground = pcd_down.select_by_index(inliers, invert=True)
             _ = pcd_no_ground.cluster_dbscan(eps=self.cluster_tol, min_points=self.min_cluster)
-            
+
             self.get_logger().info('CUDA Pipelines & NumPy ROI structures compiled successfully.')
         except Exception as e:
             self.get_logger().warn(f'Warmup execution bypassed: {str(e)}')
@@ -119,9 +126,6 @@ class LidarClusterNode(Node):
         # --- FIX: Clamp the initial clock connection lag ---
         if data_age_ms < -100000.0 or data_age_ms > 100000.0:
             data_age_ms = 0.0  # Force first frame to 0.0ms instead of showing the time warp
-
-        # 4. Fast Vectorized Zero-Copy Byte Conversion (CPU to NumPy)
-        conversion_start = time.perf_counter()
 
         # 1. Fast Vectorized Zero-Copy Byte Conversion (CPU to NumPy)
         conversion_start = time.perf_counter()
@@ -148,8 +152,9 @@ class LidarClusterNode(Node):
         # ⚡ GPU OFFLOAD: Instantly map arrays to RTX 4060 VRAM
         # ----------------------------------------------------------------------
         gpu_upload_start = time.perf_counter()
-        o3d_points = o3d.core.Tensor(points, dtype=o3d.core.float32, device=self.device)
-        pcd_gpu = o3d.t.geometry.PointCloud(o3d_points)
+        o3d_points = o3d.core.Tensor(points, dtype=o3d.core.float32, device=self.o3d_device)
+        pcd_gpu = o3d.t.geometry.PointCloud(device=self.o3d_device)
+        pcd_gpu.point["positions"] = o3d.core.Tensor(points, dtype=o3d.core.float32, device=self.o3d_device)
         upload_time_ms = (time.perf_counter() - gpu_upload_start) * 1000.0
 
         # 3. GPU Voxel Downsampling
@@ -240,7 +245,6 @@ class LidarClusterNode(Node):
             hp.class_id = f'cluster_{i}'
             hp.score = 1.0
             hypothesis.hypothesis = hp
-            
             hypothesis.pose = PoseWithCovariance()
             hypothesis.pose.pose = Pose()
             hypothesis.pose.pose.position.x = float(center[0])
@@ -249,14 +253,16 @@ class LidarClusterNode(Node):
             hypothesis.pose.pose.orientation.w = 1.0
             detection.results.append(hypothesis)
             
+             # ⚡ FIXED REAL BOX ASSIGNMENTS: Mapping unique 0, 1, 2 axes directly
             bbox = BoundingBox3D()
             bbox.center.position.x = float(center[0])
             bbox.center.position.y = float(center[1])
             bbox.center.position.z = float(center[2])
             bbox.center.orientation.w = 1.0
-            bbox.size.x = float(extent[0])
-            bbox.size.y = float(extent[1])
-            bbox.size.z = float(extent[2])
+            
+            bbox.size.x = float(length) # Maps length (index 0)
+            bbox.size.y = float(width)  # Maps width  (index 1)
+            bbox.size.z = float(height) # Maps height (index 2)
             
             detection.bbox = bbox
             detections.detections.append(detection)
@@ -281,7 +287,6 @@ class LidarClusterNode(Node):
         self.perf_log_dbscan.append(dbscan_time_ms)
         self.perf_log_total.append(node_time_ms)
         # ----------------------------------------------------------------------
-
 
         # Log complete GPU performance metrics profile
         self.get_logger().info(
@@ -382,7 +387,7 @@ def main(args=None):
 
     try:
         node = LidarClusterNode()
-        executor = MultiThreadedExecutor()
+        executor = SingleThreadedExecutor()
         executor.add_node(node)
         executor.spin()
     except KeyboardInterrupt:
