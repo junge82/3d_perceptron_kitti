@@ -21,7 +21,6 @@ def generate_launch_description():
     package_share_dir = Path(get_package_share_directory('kitti_r1_perception'))
     print(f"Package share directory: {package_share_dir}")
     # 2. Step up past 'share', package name, 'install', to reach '3d_perceptron_kitti'
-    #    This assumes the package is installed in a standard ROS 2 workspace structure. 
     workspace_root = package_share_dir.parents[3]
     print(f"Workspace root directory: {workspace_root}")
     # 3. Safely target your dataset folder relative to the workspace root core
@@ -40,7 +39,7 @@ def generate_launch_description():
         description='Logging level (DEBUG, INFO, WARN, ERROR, FATAL)'
     )
     
-    # NEW: Control playback speed (e.g., 0.5 for half speed, 2.0 for double speed)
+    # NEW: Control playback speed
     play_rate_arg = DeclareLaunchArgument(
         'play_rate',
         default_value='1.0',
@@ -50,7 +49,7 @@ def generate_launch_description():
     # NEW: Control the initial startup delay in seconds
     playback_delay_arg = DeclareLaunchArgument(
         'playback_delay',
-        default_value='3.0',
+        default_value='0.0',
         description='Seconds to wait after RViz starts before playing the bag'
     )
 
@@ -102,13 +101,13 @@ def generate_launch_description():
                    ]
     )
 
-    # 5. BEV Visualizer Node
+    # BEV Visualizer Node
     bev_node = Node(
             package='kitti_r1_perception',
             executable='bev_visualizer_node',
             name='bev_visualizer_node',
             output='screen',
-            parameters=[{'use_sim_time': True}],
+            parameters=[{'use_sim_time': sim_time_config}],
             arguments=['--ros-args',
                        '--log-level',
                        LaunchConfiguration('log_level'),
@@ -128,7 +127,6 @@ def generate_launch_description():
         executable='rviz2',
         name='rviz2',
         output='screen',        
-        # ⚡ FIX 1: Replaced the undefined 'sim_time_param' variable with a clean dictionary format block
         parameters=[{'use_sim_time': sim_time_config}],
         arguments=['-d', rviz_config_file,
                    '--ros-args', '--log-level', LaunchConfiguration('log_level'),
@@ -140,7 +138,6 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='map_to_velodyne_tf',
-        # ⚡ FIX 2: Added parameter mapping here so TF frames listen to RCL_CLOCK_ROS clocks
         parameters=[{'use_sim_time': sim_time_config}],
         arguments=[
             '--x', '0', '--y', '0', '--z', '0', 
@@ -153,7 +150,6 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='map_to_camera_tf',
-        # ⚡ FIX 3: Added parameter mapping here so TF frames listen to RCL_CLOCK_ROS clocks
         parameters=[{'use_sim_time': sim_time_config}],
         arguments=[
             '--x', '0', '--y', '0', '--z', '0', 
@@ -163,16 +159,17 @@ def generate_launch_description():
         ]
     )
 
-    # FIX: Define the setup function inside the main scope to natively capture 'rviz_node'
     def launch_setup(context, *args, **kwargs):
-        # Safely retrieve the string path from the launch context
         bag_path_string = LaunchConfiguration('bag_path').perform(context)
         rate_string = LaunchConfiguration('play_rate').perform(context)
         delay_float = float(LaunchConfiguration('playback_delay').perform(context))
 
-        # Define the bag process using the evaluated path
         bag_play_process = ExecuteProcess(
-            cmd=['ros2', 'bag', 'play', bag_path_string, '--clock', '--rate', rate_string],
+            cmd=[
+                'ros2', 'bag', 'play', bag_path_string, 
+                '--clock', 
+                '--rate', rate_string
+            ],
             output='screen'
         )
 
@@ -181,7 +178,6 @@ def generate_launch_description():
             actions=[bag_play_process]
         )
 
-        # Wrap the bag process inside the OnProcessStart event handler
         delay_bag_play = RegisterEventHandler(
             event_handler=OnProcessStart(
                 target_action=rviz_node,
@@ -191,18 +187,17 @@ def generate_launch_description():
         return [delay_bag_play]
 
     return LaunchDescription([   
-        use_sim_time_arg,  # ⚡ Included back into launch block stack array core
+        use_sim_time_arg,  
         bag_path_arg, 
         play_rate_arg,
         playback_delay_arg,
         log_level_arg,
-        # lidar_node,
+        #lidar_node,
         camera_node,
-        # fusion_node,
-        # bev_node,
-        # map_to_velodyne_tf_publisher,
-        map_to_camera_tf_publisher,
+        #fusion_node,
+        #bev_node,
+        #map_to_velodyne_tf_publisher,
+        #map_to_camera_tf_publisher,
         rviz_node,
-        # OpaqueFunction now runs cleanly without dict/argument mismatches
         OpaqueFunction(function=launch_setup)
     ])

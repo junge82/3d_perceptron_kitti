@@ -3,10 +3,9 @@ name = "kitti-3d-perception-pipeline"
 channels = ["robostack-jazzy", "conda-forge"]
 platforms = ["linux-64", "win-64"]
 
-# 1. Update the virtual requirement to match PyTorch 2.5+'s requirements
 [system-requirements]
-cuda = "12.6"
-libc = "2.31"  # 👈 ADD THIS LINE TO ALLOW MANYLINUX_2_31 WHEELS
+cuda = "12.9"   # ⚡ UPDATED TO MATCH PYTORCH 2.10+ EXPECTATIONS
+libc = "2.31"  
 
 [dependencies]
 # ROS 2 Core & Messages
@@ -20,8 +19,8 @@ ros-jazzy-robot-state-publisher = "*"
 ros-jazzy-xacro = ">=2.1.1,<3"
 
 # Modern CMake Vendor Updates
-ros-jazzy-gtest-vendor = ">=1.14.0" # 👈 FORCES PIXI TO OVERRIDE EMBEDDED PACKAGES WITH MODERN CMAKE POLICIES
-gtest = ">=1.14.0"                # 👈 BINDS MODERN UPSTREAM HEADERS
+ros-jazzy-gtest-vendor = ">=1.14.0" 
+gtest = ">=1.14.0"                
 
 # ROS 2 Build Tools
 colcon-ros = ">=0.5.0,<0.6"
@@ -29,48 +28,40 @@ colcon-common-extensions = ">=0.3.0,<0.4"
 
 # Cross-platform dependencies
 python = ">=3.12,<3.13"
-ultralytics = "*"
 numpy = "*"
 opencv = ">=4.12.0,<5"
 transforms3d = ">=0.4.2"
 torchvision = ">=0.25.0,<0.26.0"
 
-# 👇 ADD THESE TWO ENTITIES TO BIND EXPORT COMPILER BINARIES
+# Binds Export Tools
 onnx = ">=1.16.0"
 onnxslim = ">=0.1.80"
 
-
-# ROSs JAZZY
+# ROS 2 Jazzy Core Storage 
 ros-jazzy-rosbag2 = ">=0.26.9,<0.27"
 ros-jazzy-rosbag2-storage-mcap = ">=0.26.9,<0.27"
 ros-jazzy-joint-state-publisher = ">=2.4.1,<3"
 ros-jazzy-joint-state-publisher-gui = ">=2.4.1,<3"
 
-# 2. PIN PYTORCH CORE TO ALIGN SPECIFICALLY WITH THE VISION BINDING Above
 [target.linux-64.dependencies]
 pytorch-gpu = ">=2.10.0,<2.11.0"
+onnxruntime = ">=1.20.1" 
+# ⚡ SPECIFY CORRECT SEMANTIC COMPARISON VERSION TO REMOVE SOLVER CONFLICT
+cuda-version = "==12.9"
+cudnn = "*"
+cuda-cudart = "*"
 
 [target.win-64.dependencies]
 pytorch-gpu = ">=2.10.0,<2.11.0"
+onnxruntime = ">=1.20.1"
+cuda-version = "==12.9"
+cudnn = "*"
+cuda-cudart = "*"
 
-# 2. UPDATE PYPI WHEEL SPECS WITH EXACT ORT BINDINGS
 [target.linux-64.pypi-dependencies]
 open3d = "*"
-# Force the explicit CUDA-12 compatible runtime wheel release
-onnxruntime-gpu = "==1.20.1"
 
-[target.win-64.pypi-dependencies]
-open3d = "*"
-# Force Windows to grab the exact matching compiled layout
-onnxruntime-gpu = "==1.20.1"
-
-# 5. Quick GPU test tasks
 [tasks]
-# 1. Warm up the NVME cache
-warmup = { cmd = "python -c \"import open3d, sklearn, pandas, torch, ultralytics; print('--- HDD Cache Warmup Complete ---')\"" }
-
-# 2. Add the strict GPU validation check
+warmup = { cmd = "python -c \"import open3d, sklearn, pandas; print('--- NVME Cache Warmup Complete ---')\"" }
 validate-gpu = { cmd = "python validate_pipeline_gpu.py", depends-on = ["warmup"] }
-
-# 3. Block your pipeline run until validation completely passes
 run-pipeline = { cmd = "bash -c 'export PYTHONUNBUFFERED=1 && colcon build --symlink-install && source install/setup.bash && ros2 launch kitti_r1_perception myperception.launch.py playback_delay:=8.0 2>&1 | tee pipeline_session.log'", depends-on = ["validate-gpu"] }

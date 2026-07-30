@@ -8,7 +8,7 @@ import onnxruntime as ort
 import rclpy
 from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from ament_index_python.packages import get_package_share_directory
 from sensor_msgs.msg import Image
@@ -62,21 +62,16 @@ class CameraDetectorNode(Node):
             self.get_logger().error(f"ONNX Model missing! Expected at: {model_path}. Please export it first.")
             return
 
+        # Add these environment variables BEFORE creating your InferenceSession
+        os.environ["OMP_NUM_THREADS"] = "2"       # Cap CPU helper threads
+        os.environ["OMP_WAIT_POLICY"] = "PASSIVE" # Forces threads to yield CPU when waiting
+
         # ⚡ INITIALIZE HIGH-SPEED ONNX CUDA ENGINE
         opts = ort.SessionOptions()
-        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         
-        # ⚡ TARGET RTX 4060 TENSOR CORES DIRECTLY
         providers = [
-            ('TensorrtExecutionProvider', {
-                'device_id': 0,
-                'trt_fp16_enable': True,          # Maximize 4060 FP16 Tensor Core throughput
-                'trt_max_workspace_size': 2 * 1024 * 1024 * 1024, # 2GB Workspace cache
-                'trt_engine_cache_enable': True,  # Cache engine so startup is instant next time
-                'trt_engine_cache_path': self.torch_home_dir
-            }),
             ('CUDAExecutionProvider', {
-                'device_id': 0,
+                'device_id': 0
             }),
             'CPUExecutionProvider'
         ]
@@ -104,11 +99,12 @@ class CameraDetectorNode(Node):
         self.annotated_pub = self.create_publisher(Image, '/detection/camera_annotated', realtime_qos)
         self.get_logger().info('ONNX Multi-Shape Perception Pipeline Activated Successfully.')
 
-    def multiclass_nms(self, boxes, scores, class_ids):
-        """Ultra-fast vectorized Non-Maximum Suppression engine using OpenCV."""
+    def multiclass_nms(self, boxes, scores):
+        """Ultra-fast NMS utilizing direct tuple/slicing passes rather than heavy .tolist() conversions."""
+        # OpenCV NMS accepts native numpy floats much faster if wrapped precisely
         indices = cv2.dnn.NMSBoxes(
-            boxes.tolist(), 
-            scores.tolist(), 
+            boxes, 
+            scores, 
             float(self.conf_threshold), 
             float(self.iou_threshold)
         )
@@ -138,7 +134,7 @@ class CameraDetectorNode(Node):
         img_rgb = cv2.cvtColor(cv_image_resized, cv2.COLOR_BGR2RGB)
         img_chw = img_rgb.transpose((2, 0, 1)) # HWC to CHW
         img_norm = np.ascontiguousarray(img_chw, dtype=np.float32) / 255.0
-        img_tensor = np.expand_dims(img_norm, axis=0) # Shape: [1, 3, H, W]
+        img_tensor = np.ascontiguousarray(np.expand_dims(img_norm, axis=0), dtype=np.float32)
 
         # Execute ONNX forward execution map
         inference_start = time.perf_counter()
@@ -176,7 +172,7 @@ class CameraDetectorNode(Node):
             class_array = np.argmax(filtered_preds[:, 4:], axis=1)
             
             # Step 2: Filter overlapped predictions via Vectorized NMS Engine
-            keep_indices = self.multiclass_nms(box_array, score_array, class_array)
+            keep_indices = self.multiclass_nms(box_array, score_array)
             
             # Step 3: Populate arrays and draw boxes simultaneously
             for idx in keep_indices:
@@ -268,7 +264,7 @@ def main(args=None):
 
     try:
         node = CameraDetectorNode()
-        executor = MultiThreadedExecutor(num_threads=2)
+        executor = SingleThreadedExecutor()
         executor.add_node(node)
         executor.spin()
     except KeyboardInterrupt:
