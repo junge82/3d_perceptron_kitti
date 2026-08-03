@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from vision_msgs.msg import Detection3DArray, Detection2DArray, ObjectHypothesisWithPose
 import numpy as np
@@ -21,7 +21,7 @@ class FrustumFusionNode(Node):
         sys.stdout.reconfigure(line_buffering=True)
 
         # Parameters
-        self.declare_parameter('match_radius', 50.0) 
+        self.declare_parameter('match_radius', 50.0) # Matches your projection scaling limits
         self.match_radius = self.get_parameter('match_radius').value
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -59,39 +59,43 @@ class FrustumFusionNode(Node):
             depth=5 # Healthy depth allowance for synchronizer pairing buffers
         )
 
-        # ⚡ FIX 2: Change to ReentrantCallbackGroup so both subscription channels 
-        # can safely fill the synchronizer queue concurrently without locking each other out
-        self.callback_group = ReentrantCallbackGroup()
+        # ⚡ FIX 2: Use a Mutually Exclusive Callback Group to prevent deadlocks in multi-threaded execution
+        # ⚡ ISOLATE THREAD QUEUE TO PREVENT RVIZ2 STALLING
+        self.callback_group = MutuallyExclusiveCallbackGroup()
 
-        # Direct Subscriptions (No slow filtering middleware locks)
-        self.camera_sub = self.create_subscription(
-            Detection2DArray, '/detection/camera_2d',
-            self.camera_callback, optimized_qos, callback_group=self.callback_group
-        )
-
-        self.lidar_sub = self.create_subscription(
-            Detection3DArray, '/detection/lidar_clusters',
-            self.lidar_callback, optimized_qos, callback_group=self.callback_group
-        )
-
+        # Publisher for fused 3D detections
         self.fused_pub = self.create_publisher(Detection3DArray, '/detection/fused_3d', 2)
-        self.get_logger().info('Frustum Fusion Node with CUDA-aware performance tracking with E2E Age Tracking started.')
 
-    def camera_callback(self, msg):
-        """Thread 1: Instantly caches the incoming 2D boxes in RAM."""
-        self.latest_camera_msg = msg
+        # # TRUE SYNCHRONIZATION: Use message_filters to pair 2D and 3D detections based on timestamps
+        self.camera_filter = message_filters.Subscriber(self,
+            Detection2DArray, 
+            '/detection/camera_2d',
+            qos_profile=optimized_qos,
+            callback_group=self.callback_group)
 
-    def lidar_callback(self, lidar_msg):
+        self.lidar_filter = message_filters.Subscriber(self,
+            Detection3DArray,
+            '/detection/lidar_clusters',
+            qos_profile=optimized_qos,
+            callback_group=self.callback_group)
+
+        # Use ApproximateTimeSynchronizer to allow for slight timestamp mismatches
+        self.ts = message_filters.ApproximateTimeSynchronizer(
+            [self.camera_filter, self.lidar_filter],
+            queue_size=3, # Small queue stops backup leakage completely
+            slop=0.03,  # Forces strict 30ms realt-time frame pairing, but allows for slight jitter
+        )
+        self.ts.registerCallback(self.sync_callback)
+        self.get_logger().info("Vectorized CUDA Frustum Fusion Engine Activated Successfully.")
+
+    def sync_callback(self, camera_msg, lidar_msg):
         # Start callback CPU timer
-        callback_start_time = time.perf_counter()
-        """Thread 2: Triggered by Lidar clusters, pairs immediately with the latest camera frame."""
-        camera_msg = self.latest_camera_msg
+        callback_start_time = time.perf_counter()        
 
-        # Escape safely if the camera hasn't published anything yet
-        # ⚡ OPTIMIZATION: Check if YOLO is still initializing its memory layout on startup
+        # Escape safely if the camera hasn't published anything yet        
         if camera_msg is None:
             self.get_logger().info(
-                "Fusion Layer Status: [WARMUP] Waiting for YOLOv8 weights initialization to complete...",
+                "Fusion Layer Status: [WARMUP] Waiting for camera msgs...",
                 throttle_duration_sec=1.5  # 💡 Throttles log output to prevent console clutter
             )
             return
@@ -100,22 +104,46 @@ class FrustumFusionNode(Node):
         num_3d = len(lidar_msg.detections)
         num_2d = len(camera_msg.detections)
 
-        # if num_3d == 0 or num_2d == 0:
-        #     return
+        if num_3d == 0 or num_2d == 0:
+            return
 
         if self.is_cuda:
             self.start_event.record()
         else:
             gpu_start_cpu_fallback = time.perf_counter()
 
-        # Vectorized 3D Lidar Extraction
-        lidar_pts_np = np.zeros((num_3d, 3), dtype=np.float32)
-        for idx in range(num_3d):
-            pos = lidar_msg.detections[idx].bbox.center.position
-            lidar_pts_np[idx, 0] = pos.x
-            lidar_pts_np[idx, 1] = pos.y
-            lidar_pts_np[idx, 2] = pos.z
+        # ⚡ ADAPTIVE UNPACKER: Adapts to your exact ONNX Camera Node message structure
+        try:
+            # 1. Extract 3D LiDAR Points
+            lidar_pts_np = np.array([
+                [float(d.bbox.center.position.x), float(d.bbox.center.position.y), float(d.bbox.center.position.z)]
+                for d in lidar_msg.detections
+            ], dtype=np.float32)
+            
+            # 2. Extract 2D Camera Points adaptively
+            camera_pts = []
+            for c in camera_msg.detections:
+                # Check if the center object uses .position layer (like some 3D messages or custom shapes)
+                if hasattr(c.bbox.center, 'position'):
+                    cx = float(c.bbox.center.position.x)
+                    cy = float(c.bbox.center.position.y)
+                elif hasattr(c.bbox.center, 'x'):
+                    cx = float(c.bbox.center.x)
+                    cy = float(c.bbox.center.y)
+                else:
+                    # Deep inspection if custom attributes are wrapped inside
+                    self.get_logger().error(f"Unknown center schema attributes: {dir(c.bbox.center)}")
+                    return
+                camera_pts.append([cx, cy])
+                
+            camera_pts_np = np.array(camera_pts, dtype=np.float32)
+            
+        except Exception as e:
+            self.get_logger().error(f"🚨 Structure parsing exception: {str(e)}")
+            return
+
         pts_3d_lidar = torch.as_tensor(lidar_pts_np, device=self.device)
+        pts_2d_tensor = torch.as_tensor(camera_pts_np, device=self.device)
 
         # 2. Transform 3D Lidar Points to Camera Frame
         pts_3d_cam = torch.addmm(self.t_tensor, pts_3d_lidar, self.R_tensor.t())
@@ -135,13 +163,8 @@ class FrustumFusionNode(Node):
         inv_z = 1.0 / proj_pts[:, 2:3]
         uv_gpu = proj_pts[:, :2] * inv_z
 
-        # ⚡ FIX 4: True Vectorized Zero-Copy 2D Center Box Extraction
-        camera_pts_np = np.zeros((num_2d, 2), dtype=np.float32)
-        for idx in range(num_2d):
-            center_pos = camera_msg.detections[idx].bbox.center.position
-            camera_pts_np[idx, 0] = center_pos.x
-            camera_pts_np[idx, 1] = center_pos.y
-        pts_2d_tensor = torch.as_tensor(camera_pts_np, device=self.device)
+        
+        
 
         # 6. Compute Parallel Distance Matrix via GPU Broadcasting
         diff = uv_gpu.unsqueeze(1) - pts_2d_tensor.unsqueeze(0)
@@ -215,36 +238,36 @@ class FrustumFusionNode(Node):
                 f"GPU Processing Time  : {gpu_time_ms:.2f} ms\n"
                 f"-----------------------------------------\n"
             )
-        # ----------------------------------------------------
-        # LATENCY & AGE CALCULATIONS
-        # ----------------------------------------------------
-        # 1. Total time inside this specific node callback
-        callback_time_ms = (time.perf_counter() - callback_start_time) * 1000.0
+        # # ----------------------------------------------------
+        # # LATENCY & AGE CALCULATIONS
+        # # ----------------------------------------------------
+        # # 1. Total time inside this specific node callback
+        # callback_time_ms = (time.perf_counter() - callback_start_time) * 1000.0
 
-        # 2. Extract accurate ROS system clock time at the moment of publishing
-        now = self.get_clock().now()
+        # # 2. Extract accurate ROS system clock time at the moment of publishing
+        # now = self.get_clock().now()
 
-        # 3. Convert message header timestamps to rclpy Time objects
-        lidar_stamp = rclpy.time.Time.from_msg(lidar_msg.header.stamp, 
-            clock_type=rclpy.time.ClockType.ROS_TIME)
-        camera_stamp = rclpy.time.Time.from_msg(camera_msg.header.stamp, 
-            clock_type=rclpy.time.ClockType.ROS_TIME)
+        # # 3. Convert message header timestamps to rclpy Time objects
+        # lidar_stamp = rclpy.time.Time.from_msg(lidar_msg.header.stamp, 
+        #     clock_type=rclpy.time.ClockType.ROS_TIME)
+        # camera_stamp = rclpy.time.Time.from_msg(camera_msg.header.stamp, 
+        #     clock_type=rclpy.time.ClockType.ROS_TIME)
 
-        # 4. Calculate total E2E processing age (Sensor Capture -> Node Finished)
-        lidar_e2e_age_ms = (now - lidar_stamp).nanoseconds / 1e6
-        camera_e2e_age_ms = (now - camera_stamp).nanoseconds / 1e6
+        # # 4. Calculate total E2E processing age (Sensor Capture -> Node Finished)
+        # lidar_e2e_age_ms = (now - lidar_stamp).nanoseconds / 1e6
+        # camera_e2e_age_ms = (now - camera_stamp).nanoseconds / 1e6
 
-        # 5. Measure the synchronization shift between the two sensor packets
-        sync_slop_ms = abs((lidar_stamp - camera_stamp).nanoseconds / 1e6)
+        # # 5. Measure the synchronization shift between the two sensor packets
+        # sync_slop_ms = abs((lidar_stamp - camera_stamp).nanoseconds / 1e6)
 
-        # Print all metrics clearly categorized
-        self.get_logger().info(
-            f"\n--- Fusion PERFORMANCE PROFILE ---\n"
-            f"Active Objects     : 3D: {num_3d} | 2D: {num_2d}\n"
-            f"Node Callback Cost : GPU Math: {gpu_time_ms:.2f}ms | Total Callback: {callback_time_ms:.2f}ms\n"
-            f"Synchronizer Slop  : {sync_slop_ms:.2f}ms\n"
-            f"End-to-End Stack Age: LiDAR E2E: {lidar_e2e_age_ms:.2f}ms | Camera E2E: {camera_e2e_age_ms:.2f}ms"
-        )
+        # # Print all metrics clearly categorized
+        # self.get_logger().info(
+        #     f"\n--- Fusion PERFORMANCE PROFILE ---\n"
+        #     f"Active Objects     : 3D: {num_3d} | 2D: {num_2d}\n"
+        #     f"Node Callback Cost : GPU Math: {gpu_time_ms:.2f}ms | Total Callback: {callback_time_ms:.2f}ms\n"
+        #     f"Synchronizer Slop  : {sync_slop_ms:.2f}ms\n"
+        #     f"End-to-End Stack Age: LiDAR E2E: {lidar_e2e_age_ms:.2f}ms | Camera E2E: {camera_e2e_age_ms:.2f}ms"
+        # )
 
     def box_class_det(self, sx, sy, horizontal_footprint_area, aspect_ratio, inst_hypothesis, camera_class, score):
         # --- 3D BOUNDING BOX VOLUME SANITY FILTERS ---
@@ -284,7 +307,7 @@ class FrustumFusionNode(Node):
             inst_hypothesis.hypothesis.score = score
         else:
             inst_hypothesis.class_id = str(camera_class)
-            inst_hypothesis.score = score
+            inst_hypothesis.score = float(score)
 
 def main(args=None):
     rclpy.init(args=args)
