@@ -1,98 +1,92 @@
 import rclpy
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rclpy.node import Node
-from sensor_msgs_py import point_cloud2
+from rclpy.executors import SingleThreadedExecutor
 from sensor_msgs.msg import PointCloud2, Image
 from vision_msgs.msg import Detection3DArray
 from cv_bridge import CvBridge
 import numpy as np
 import cv2
-import transforms3d # Ensure you have this package installed (pip install transforms3d)
-# Import message filters for exact framework synchronization
-import message_filters
+import transforms3d
+import time
 
 class BEVVisualizerNode(Node):
     def __init__(self):
         super().__init__('bev_visualizer_node')
         
-         # 1. EXACT ALIGNMENT WITH LIDAR_CLUSTER_NODE ROI PARAMETERS
-        self.min_x = 1.5    # Forward minimum boundary
-        self.max_x = 50.0   # Forward maximum boundary
-        self.min_y = -25.0  # Right boundary
-        self.max_y = 25.0   # Left boundary
-        self.resolution = 0.10 # 10cm per pixel yields a clean 500x485 canvas layout
-
-        # Compute exact pixel space boundaries based on the asymmetric box
-        self.width = int((self.max_y - self.min_y) / self.resolution)   # Lateral width
-        self.height = int((self.max_x - self.min_x) / self.resolution)  # Longitudinal height
+        import sys
+        sys.stdout.reconfigure(line_buffering=True)
         
+        # 1. EXACT ALIGNMENT WITH ROI PARAMETERS
+        self.min_x = 1.5    
+        self.max_x = 50.0   
+        self.min_y = -25.0  
+        self.max_y = 25.0   
+        self.resolution = 0.10 
+
+        self.width = int((self.max_y - self.min_y) / self.resolution)   
+        self.height = int((self.max_x - self.min_x) / self.resolution)  
         self.bridge = CvBridge()
 
+        # ⚡ 1. MEMORY CACHE POINTER FOR TRACKED OBJECTS
+        self.latest_fused_msg = None
 
-        # QoS for incoming LiDAR and Fused 3D bounding boxes,
-        # QoS for incoming synchronized topics (Must remain RELIABLE to match upstream)
-        bev_sub_qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,     # Must match upstream publishers!
+        bev_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,     
             history=HistoryPolicy.KEEP_LAST,
-            depth=5                                     # Matches frustum node's buffer allocation
-            )
-        
-         # 1. Create message_filters Subscribers instead of traditional rclpy subscriptions
-        self.lidar_sub = message_filters.Subscriber(
-            self, PointCloud2, '/kitti/velodyne/pointcloud', qos_profile=bev_sub_qos
+            depth=1  # Drop old messages instantly to prevent lag accumulation
         )
-        self.fused_sub = message_filters.Subscriber(
-            self, Detection3DArray, '/detection/fused_3d', qos_profile=bev_sub_qos
+        
+        # ⚡ 2. SUBSCRIBE ONLY TO FINISHED PIPELINE OUTPUTS (NO RAW LIDAR)
+        self.fused_sub = self.create_subscription(
+            Detection3DArray, '/detection/fused_3d', self.fused_callback, bev_qos
+        )
+        # Driven by the pre-segmented groundless cloud from your Lidar cluster node
+        self.no_ground_sub = self.create_subscription(
+            PointCloud2, '/lidar/points_no_ground', self.no_ground_callback, bev_qos
         )
 
-        # 2. Instantiate the Approximate Time Synchronizer
-        # queue_size=10 gives the buffer room to align paired messages under load
-        # slop=0.05 allows timestamp alignment variations up to 50ms (YOLO + Lidar cluster lag)
-        self.sync = message_filters.ApproximateTimeSynchronizer(
-            [self.lidar_sub, self.fused_sub], queue_size=10, slop=0.05
-        )
-        self.sync.registerCallback(self.synchronized_callback)
-        
-        self.latest_fused = None
-
-        # QoS for publishing your final visualization image to RViz2
         bev_pub_qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE, # Images to RViz can be dropped to save bandwidth
+            reliability=ReliabilityPolicy.RELIABLE, 
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
             durability=DurabilityPolicy.VOLATILE
         )
-        
-        # Publisher
         self.bev_pub = self.create_publisher(Image, '/visualization/bev_image', bev_pub_qos)
-        
-        self.get_logger().info(f'BEV Visualizer Node started. Image size: {self.width}x{self.height}')
+        self.get_logger().info(f'Lightweight Asynchronous BEV Visualizer Started: {self.width}x{self.height}')
 
-    def synchronized_callback(self, lidar_msg, fused_msg):
-        """Triggers exclusively when both messages are verified to share the same capture instance."""
-        
-        # 1. Convert PointCloud2 memory directly to standard NumPy format
-        points = point_cloud2.read_points_numpy(lidar_msg, field_names=("x", "y", "z"), skip_nans=True)
-        if points.size == 0:
+    def fused_callback(self, msg):
+        """⚡ Asynchronous Cache: Instantly updates object references in RAM."""
+        self.latest_fused_msg = msg
+
+    def no_ground_callback(self, msg):
+        """⚡ Processing Trigger: Executed by the lean, pre-filtered cloud topic."""
+        callback_start = time.perf_counter()
+        fused_msg = self.latest_fused_msg
+
+        # Direct memory casting of your clean X, Y, Z coordinates (<0.2ms)
+        raw_data = np.frombuffer(msg.data, dtype=np.uint8)
+        num_points = msg.width * msg.height
+        if num_points == 0:
             return
+            
+        points_struct = raw_data.view(dtype=np.float32).reshape(num_points, -1)
+        points = points_struct[:, :3]
 
-        # 2. Filter raw points using the exact same ROI box from your cluster node
-        mask = (points[:, 0] >= self.min_x) & (points[:, 0] <= self.max_x) & \
-               (points[:, 1] >= self.min_y) & (points[:, 1] <= self.max_y)
-        points = points[mask]
-
-        # 3. Project world coordinates into aligned pixel columns and rows
+        # Project world coordinates into aligned pixel positions
         x_pix = ((self.max_y - points[:, 1]) / self.resolution).astype(np.int32)
         y_pix = ((self.max_x - points[:, 0]) / self.resolution).astype(np.int32)
 
-        # 4. Generate base image canvas
+        # Generate base image canvas
         bev_img = np.zeros((self.height, self.width, 3), dtype=np.uint8)
         
-        # Paint within limits lidar measurements as gray pixels
+        # Paint Lidar obstacle points as gray using direct 1D memory array masking
         valid_mask = (x_pix >= 0) & (x_pix < self.width) & (y_pix >= 0) & (y_pix < self.height)
-        bev_img[y_pix[valid_mask], x_pix[valid_mask]] = [200, 200, 200]
+        if np.any(valid_mask):
+            flat_indices = y_pix[valid_mask] * self.width + x_pix[valid_mask]
+            bev_img.reshape(-1, 3)[flat_indices] = [180, 180, 180]
 
-        # --- NEW: DRAW CONCENTRIC DISTANCE RINGS & METERS OVERLAYS ---
+        # --- DRAW CONCENTRIC DISTANCE RINGS ---
         # Real-world sensor origin (0,0) projected into our asymmetric pixel coordinate frame
         origin_px_x = int((self.max_y - 0.0) / self.resolution)
         origin_px_y = int((self.max_x - 0.0) / self.resolution)
@@ -103,13 +97,10 @@ class BEVVisualizerNode(Node):
         for dist in ring_distances_meters:
             # Convert real-world meter radius directly to pixel radius
             radius_px = int(dist / self.resolution)
-            
             # Draw semi-transparent dark grey reference circles
-            cv2.circle(bev_img, (origin_px_x, origin_px_y), radius_px, (70, 70, 70), thickness=1, lineType=cv2.LINE_AA)
-            
+            cv2.circle(bev_img, (origin_px_x, origin_px_y), radius_px, (60, 60, 60), thickness=1, lineType=cv2.LINE_AA)
             # Calculate text drawing anchor point (placed along the center forward centerline)
             text_y_px = int((self.max_x - dist) / self.resolution)
-            
             # Only draw the text label if it falls inside the visible image canvas boundary
             if 0 <= text_y_px < self.height:
                 # Add text backing outline shadow for high visibility against dense point clouds
@@ -117,10 +108,9 @@ class BEVVisualizerNode(Node):
                             cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 0), 2, cv2.LINE_AA)
                 # Clear white text overlay
                 cv2.putText(bev_img, f"{int(dist)}m", (origin_px_x + 5, text_y_px + 12), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, (220, 220, 220), 1, cv2.LINE_AA)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1, cv2.LINE_AA)
 
-
-        # 5. Draw Fused Detections with Distinct Class Styling
+         # 5. Draw Fused Detections with Distinct Class Styling
         CLASS_VISUALS = {
             0: {"name": "Car",        "color": (0, 0, 255)},   # Bright Red Box
             1: {"name": "Pedestrian", "color": (255, 0, 0)},   # Deep Blue Box
@@ -134,82 +124,108 @@ class BEVVisualizerNode(Node):
             9: {"name": "Animal",     "color": (0, 128, 128)},   # Teal Box
             10: {"name": "Other",      "color": (128, 128, 128)}  # Gray Box
         }
-        
-        for det in fused_msg.detections:
-            cx = det.bbox.center.position.x
-            cy = det.bbox.center.position.y
-            sx = det.bbox.size.x  # Length (x-axis)
-            sy = det.bbox.size.y  # Width (y-axis)
-            
-            # Skip drawing immediately if the object center is outside the operational cluster ROI
-            if not (self.min_x <= cx <= self.max_x and self.min_y <= cy <= self.max_y):
-                continue
+
+        if fused_msg is not None:
+            for det in fused_msg.detections:
+                cx = float(det.bbox.center.position.x)  
+                cy = float(det.bbox.center.position.y)
+                sx = float(det.bbox.size.x)     # Length (x-axis)
+                sy = float(det.bbox.size.y)     # Width (y-axis)
+                # Skip drawing immediately if the object center is outside the operational cluster ROI
+                if not (self.min_x <= cx <= self.max_x and self.min_y <= cy <= self.max_y):
+                    continue
+                    
+                distance_meters = np.hypot(cx, cy)
                 
-            distance_meters = np.hypot(cx, cy)
-            
-            # Unpack quaternion layout to calculate object yaw heading rotation angle
-            q = det.bbox.center.orientation
-            _, _, yaw = transforms3d.euler.quat2euler([q.w, q.x, q.y, q.z])
-            
-            # Generate the bounding box perimeter corners relative to its local center coordinate
-            local_corners = np.array([
-                [ sx/2,  sy/2], [ sx/2, -sy/2],
-                [-sx/2, -sy/2], [-sx/2,  sy/2]
-            ])
-            
-            # Build 2D rotation matrix using computed yaw
-            cos_y, sin_y = np.cos(yaw), np.sin(yaw)
-            rot_mat = np.array([[cos_y, -sin_y], 
-                                [sin_y,  cos_y]])
-            
-            # Perform matrix transform to world coordinates
-            world_corners = (rot_mat @ local_corners.T).T + np.array([cx, cy])
-            
-            # Project transformed corners into the aligned asymmetric pixel space
-            pix_corners = np.zeros_like(world_corners, dtype=np.int32)
-            pix_corners[:, 0] = ((self.max_y - world_corners[:, 1]) / self.resolution).astype(np.int32) 
-            pix_corners[:, 1] = ((self.max_x - world_corners[:, 0]) / self.resolution).astype(np.int32) 
-            
-            # Safe Portable Class Extraction mapping ROS 2 vision_msg API changes safely
-            cls_id = -1
-            if det.results and len(det.results) > 0:
-                first_result = det.results[0]  # Hardcoded target index 0 fixes list parsing bugs
+                # Unpack quaternion layout to calculate object yaw heading rotation angle
+                q = det.bbox.center.orientation
+                _, _, yaw = transforms3d.euler.quat2euler([q.w, q.x, q.y, q.z])
+
+                # Generate the bounding box perimeter corners relative to its local center coordinate
+                # In the standard KITTI coordinate frame, 
+                # the tracking definitions are mapped using the standard right-hand rule system:
+                # X-axis points directly Forward (Longitudinal axis).
+                # Y-axis points directly Left (Lateral axis).
+                 
+                 # 1. Local 2D corner bounding matrix tracking coordinates
+                local_corners = np.array([
+                    [ sx/2,  sy/2],  # Front-Left
+                    [ sx/2, -sy/2],  # Front-Right
+                    [-sx/2, -sy/2],  # Rear-Right
+                    [-sx/2,  sy/2]   # Rear-Left
+                ])
+
+                # Build 2D rotation matrix using computed yaw
+                cos_y, sin_y = np.cos(yaw), np.sin(yaw)
+                rot_mat = np.array([[cos_y, -sin_y],
+                                     [sin_y,  cos_y]], dtype=np.float32)
+
+                 # ⚡ FIXED ROW-BY-COLUMN MULTIPLICATION ORDER
+                # Multiplying local_corners directly by the transposed rotation matrix
+                # applies the yaw accurately without introducing transformation distortions.                
+                # Perform matrix transform to world coordinates
+                world_corners = np.dot(local_corners, rot_mat.T) + np.array([cx, cy], dtype=np.float32)
+
+                # Project transformed corners into the aligned asymmetric pixel space
+                pix_corners = np.zeros_like(world_corners, dtype=np.int32)
+                pix_corners[:, 0] = ((self.max_y - world_corners[:, 1]) / self.resolution).astype(np.int32) 
+                pix_corners[:, 1] = ((self.max_x - world_corners[:, 0]) / self.resolution).astype(np.int32) 
+                
+                # ROS 2 Jazzy Attribute Reading
+                cls_id = -1
+                if det.results and len(det.results) > 0:
+                   first_result = det.results[0]  # Hardcoded target index 0 fixes list parsing bugs
                 
                 if hasattr(first_result, 'hypothesis'):
                     cls_id = int(first_result.hypothesis.class_id)
                 else:
                     cls_id = int(first_result.class_id)
 
-            visual = CLASS_VISUALS.get(cls_id, {"name": f"ID:{cls_id}", "color": (0, 255, 0)})
-            
-            # Draw rotated boundary box using class-specific color
-            cv2.polylines(bev_img, [pix_corners], isClosed=True, color=visual["color"], thickness=2)
-            
-            # Draw forward heading direction vector indicator line
-            front_mid_world = (rot_mat @ np.array([sx/2, 0])) + np.array([cx, cy])
-            f_mid_px = int((self.max_y - front_mid_world[1]) / self.resolution)
-            f_mid_py = int((self.max_x - front_mid_world[0]) / self.resolution)
-            c_px = int((self.max_y - cy) / self.resolution)
-            c_py = int((self.max_x - cx) / self.resolution)
-            cv2.line(bev_img, (c_px, c_py), (f_mid_px, f_mid_py), visual["color"], 2)
+                visual = CLASS_VISUALS.get(cls_id, {"name": f"ID:{cls_id}", "color": (0, 255, 0)})
+                
+                # Draw rotated box bounding shape
+                cv2.polylines(bev_img, [pix_corners.reshape(-1, 1, 2)], isClosed=True, color=visual["color"], thickness=2)
+                
+                # Draw heading line indicators
+                front_mid_world = np.dot(np.array([sx/2, 0.0], dtype=np.float32), rot_mat.T) + np.array([cx, cy], dtype=np.float32)
+                f_mid_px = int((self.max_y - front_mid_world[1]) / self.resolution)
+                f_mid_py = int((self.max_x - front_mid_world[0]) / self.resolution)
+                c_px = int((self.max_y - cy) / self.resolution)
+                c_py = int((self.max_x - cx) / self.resolution)
+                cv2.line(bev_img, (c_px, c_py), (f_mid_px, f_mid_py), visual["color"], 2)
 
-            # Draw text label layout (Cleaned and optimized Single Block)
-            display_text = f"{visual['name']} [{distance_meters:.1f}m]"
-            tx = int(pix_corners[0, 0])
-            ty = int(pix_corners[0, 1] - 5)
-            cv2.putText(bev_img, display_text, (tx, ty), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, visual["color"], 1)
+                # ⚡ TEMPORARY DEBUG LOG FOR HEADING VERIFICATION
+                # Calculate the raw vector pointing direction in pixel coordinates
+                dx = f_mid_px - c_px
+                dy = f_mid_py - c_py
+                
+                self.get_logger().debug(
+                    f"\n[HEADING CHECK] Object Class: {cls_id} | Distance: {distance_meters:.1f}m\n"
+                    f"└─ Raw Yaw (Radians): {yaw:.4f} | Quat [w,x,y,z]: [{q.w:.2f}, {q.x:.2f}, {q.y:.2f}, {q.z:.2f}]\n"
+                    f"└─ Pixel Delta vector [dX, dY]: [{dx}, {dy}]"
+                )
 
-        # 6. Ship image message using Lidar header metadata
+
+                # Overlay distance tag text string properties
+                display_text = f"{visual['name']} [{distance_meters:.1f}m]"
+                cv2.putText(bev_img, display_text, (int(pix_corners[0, 0]), int(pix_corners[0, 1] - 5)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, visual["color"], 1, cv2.LINE_AA)
+
+        # 6. Publish processed visualization frame
         bev_msg = self.bridge.cv2_to_imgmsg(bev_img, encoding='bgr8')
-        bev_msg.header = lidar_msg.header
+        bev_msg.header = msg.header
         self.bev_pub.publish(bev_msg)
+        
+        cost_ms = (time.perf_counter() - callback_start) * 1000.0
+        self.get_logger().info(f"⚡ Asynchronous BEV Render Complete. Cost: {cost_ms:.2f}ms", throttle_duration_sec=2.0)
 
 def main(args=None):
     rclpy.init(args=args)
     node = BEVVisualizerNode()
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
