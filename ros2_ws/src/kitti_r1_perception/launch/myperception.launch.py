@@ -47,11 +47,74 @@ def generate_launch_description():
         description='Playback rate speed multiplier for ros2 bag play'
     )
 
-    # NEW: Control the initial startup delay in seconds
     playback_delay_arg = DeclareLaunchArgument(
         'playback_delay',
         default_value='0.0',
         description='Seconds to wait after RViz starts before playing the bag'
+    )
+
+    # Lidar cluster tuning parameters
+    voxel_size_arg = DeclareLaunchArgument(
+        'voxel_size',
+        default_value='0.15',
+        description='Voxel size for lidar downsampling'
+    )
+    ground_distance_threshold_arg = DeclareLaunchArgument(
+        'ground_distance_threshold',
+        default_value='0.3',
+        description='Distance threshold for ground plane segmentation'
+    )
+    cluster_tolerance_arg = DeclareLaunchArgument(
+        'cluster_tolerance',
+        default_value='0.6',
+        description='DBSCAN tolerance for lidar clustering'
+    )
+    min_cluster_size_arg = DeclareLaunchArgument(
+        'min_cluster_size',
+        default_value='20',
+        description='Minimum number of points to keep a cluster'
+    )
+    max_cluster_size_arg = DeclareLaunchArgument(
+        'max_cluster_size',
+        default_value='1000',
+        description='Maximum number of points for a cluster'
+    )
+
+    # BEV ROI parameters
+    bev_min_x_arg = DeclareLaunchArgument(
+        'bev_min_x',
+        default_value='1.5',
+        description='BEV minimum forward distance'
+    )
+    bev_max_x_arg = DeclareLaunchArgument(
+        'bev_max_x',
+        default_value='50.0',
+        description='BEV maximum forward distance'
+    )
+    bev_min_y_arg = DeclareLaunchArgument(
+        'bev_min_y',
+        default_value='-25.0',
+        description='BEV minimum lateral distance'
+    )
+    bev_max_y_arg = DeclareLaunchArgument(
+        'bev_max_y',
+        default_value='25.0',
+        description='BEV maximum lateral distance'
+    )
+    bev_resolution_arg = DeclareLaunchArgument(
+        'bev_resolution',
+        default_value='0.10',
+        description='BEV image resolution in meters per pixel'
+    )
+    roi_min_z_arg = DeclareLaunchArgument(
+        'roi_min_z',
+        default_value='-1.8',
+        description='Lidar ROI minimum height'
+    )
+    roi_max_z_arg = DeclareLaunchArgument(
+        'roi_max_z',
+        default_value='2.0',
+        description='Lidar ROI maximum height'
     )
 
     # Lidar Cluster Node
@@ -61,7 +124,20 @@ def generate_launch_description():
         name='lidar_cluster_node',
         output='screen',
         emulate_tty=True,
-        parameters=[{'use_sim_time': sim_time_config}],
+        parameters=[
+            {'use_sim_time': sim_time_config},
+            {'voxel_size': LaunchConfiguration('voxel_size')},
+            {'ground_distance_threshold': LaunchConfiguration('ground_distance_threshold')},
+            {'cluster_tolerance': LaunchConfiguration('cluster_tolerance')},
+            {'min_cluster_size': LaunchConfiguration('min_cluster_size')},
+            {'max_cluster_size': LaunchConfiguration('max_cluster_size')},
+            {'bev_min_x': LaunchConfiguration('bev_min_x')},
+            {'bev_max_x': LaunchConfiguration('bev_max_x')},
+            {'bev_min_y': LaunchConfiguration('bev_min_y')},
+            {'bev_max_y': LaunchConfiguration('bev_max_y')},
+            {'roi_min_z': LaunchConfiguration('roi_min_z')},
+            {'roi_max_z': LaunchConfiguration('roi_max_z')}
+        ],
         arguments=['--ros-args', '--log-level', LaunchConfiguration('log_level'),
                    '--log-file-name', 'lidar_cluster_node.log'
         ]
@@ -204,9 +280,21 @@ def generate_launch_description():
     return LaunchDescription([   
         use_sim_time_arg,  
         bag_path_arg, 
+        log_level_arg,
         play_rate_arg,
         playback_delay_arg,
-        log_level_arg,
+        voxel_size_arg,
+        ground_distance_threshold_arg,
+        cluster_tolerance_arg,
+        min_cluster_size_arg,
+        max_cluster_size_arg,
+        bev_min_x_arg,
+        bev_max_x_arg,
+        bev_min_y_arg,
+        bev_max_y_arg,
+        bev_resolution_arg,
+        roi_min_z_arg,
+        roi_max_z_arg,
         lidar_node,
         camera_node,
         # foxglove_bridge_node,

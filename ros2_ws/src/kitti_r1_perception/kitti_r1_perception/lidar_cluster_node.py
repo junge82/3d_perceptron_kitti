@@ -31,12 +31,24 @@ class LidarClusterNode(Node):
         self.declare_parameter('cluster_tolerance', 0.6)
         self.declare_parameter('min_cluster_size', 20)
         self.declare_parameter('max_cluster_size', 1000)
+        self.declare_parameter('bev_min_x', 1.5)
+        self.declare_parameter('bev_max_x', 50.0)
+        self.declare_parameter('bev_min_y', -25.0)
+        self.declare_parameter('bev_max_y', 25.0)
+        self.declare_parameter('roi_min_z', -1.8)
+        self.declare_parameter('roi_max_z', 2.0)
         
         self.voxel_size = self.get_parameter('voxel_size').value
         self.ground_dist = self.get_parameter('ground_distance_threshold').value
         self.cluster_tol = self.get_parameter('cluster_tolerance').value
         self.min_cluster = self.get_parameter('min_cluster_size').value
         self.max_cluster = self.get_parameter('max_cluster_size').value
+        self.bev_min_x = self.get_parameter('bev_min_x').value
+        self.bev_max_x = self.get_parameter('bev_max_x').value
+        self.bev_min_y = self.get_parameter('bev_min_y').value
+        self.bev_max_y = self.get_parameter('bev_max_y').value
+        self.roi_min_z = self.get_parameter('roi_min_z').value
+        self.roi_max_z = self.get_parameter('roi_max_z').value
 
         # Define the real-time profile inside __init__
         lidar_qos = QoSProfile(
@@ -138,9 +150,9 @@ class LidarClusterNode(Node):
         # 2. Vectorized ROI Box Filter (X=Forward, Y=Lateral, Z=Height)
         roi_start = time.perf_counter()
         roi_mask = (
-            (points[:, 0] >= 1.5)   & (points[:, 0] <= 50.0) &  # X is FORWARD (1.5m to 50m ahead)
-            (points[:, 1] >= -25.0) & (points[:, 1] <= 25.0) &  # Y is LATERAL (25m Right to 25m Left)
-            (points[:, 2] >= -1.8)  & (points[:, 2] <= 2.0)      # Z is VERTICAL Height
+            (points[:, 0] >= self.bev_min_x)   & (points[:, 0] <= self.bev_max_x) &  # X is FORWARD
+            (points[:, 1] >= self.bev_min_y) & (points[:, 1] <= self.bev_max_y) &  # Y is LATERAL
+            (points[:, 2] >= self.roi_min_z)  & (points[:, 2] <= self.roi_max_z)      # Z is VERTICAL Height
         )
         points = points[roi_mask]
         roi_time_ms = (time.perf_counter() - roi_start) * 1000.0

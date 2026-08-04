@@ -17,15 +17,21 @@ class BEVVisualizerNode(Node):
         import sys
         sys.stdout.reconfigure(line_buffering=True)
         
-        # 1. EXACT ALIGNMENT WITH ROI PARAMETERS
-        self.min_x = 1.5    
-        self.max_x = 50.0   
-        self.min_y = -25.0  
-        self.max_y = 25.0   
-        self.resolution = 0.10 
+        # Parameters exposed to launch configuration for easy tuning
+        self.declare_parameter('bev_min_x', 1.5)
+        self.declare_parameter('bev_max_x', 50.0)
+        self.declare_parameter('bev_min_y', -25.0)
+        self.declare_parameter('bev_max_y', 25.0)
+        self.declare_parameter('bev_resolution', 0.10)
 
-        self.width = int((self.max_y - self.min_y) / self.resolution)   
-        self.height = int((self.max_x - self.min_x) / self.resolution)  
+        self.min_x = self.get_parameter('bev_min_x').value
+        self.max_x = self.get_parameter('bev_max_x').value
+        self.min_y = self.get_parameter('bev_min_y').value
+        self.max_y = self.get_parameter('bev_max_y').value
+        self.resolution = self.get_parameter('bev_resolution').value
+
+        self.width = int((self.max_y - self.min_y) / self.resolution)
+        self.height = int((self.max_x - self.min_x) / self.resolution)
         self.bridge = CvBridge()
 
         # ⚡ 1. MEMORY CACHE POINTER FOR TRACKED OBJECTS
