@@ -19,7 +19,6 @@ class LidarClusterNode(Node):
     def __init__(self):
         super().__init__('lidar_cluster_node')
 
-        # CRITICAL FIX: Declare arrays at the absolute start of __init__
         self.perf_log_data_age = []
         self.perf_log_ransac = []
         self.perf_log_dbscan = []
@@ -150,13 +149,12 @@ class LidarClusterNode(Node):
         # 2. Vectorized ROI Box Filter (X=Forward, Y=Lateral, Z=Height)
         roi_start = time.perf_counter()
         roi_mask = (
-            (points[:, 0] >= self.bev_min_x)   & (points[:, 0] <= self.bev_max_x) &  # X is FORWARD
-            (points[:, 1] >= self.bev_min_y) & (points[:, 1] <= self.bev_max_y) &  # Y is LATERAL
-            (points[:, 2] >= self.roi_min_z)  & (points[:, 2] <= self.roi_max_z)      # Z is VERTICAL Height
+            (points[:, 0] >= self.bev_min_x)   & (points[:, 0] <= self.bev_max_x) &     # X is FORWARD
+            (points[:, 1] >= self.bev_min_y) & (points[:, 1] <= self.bev_max_y) &       # Y is LATERAL
+            (points[:, 2] >= self.roi_min_z)  & (points[:, 2] <= self.roi_max_z)        # Z is VERTICAL Height
         )
         points = points[roi_mask]
         roi_time_ms = (time.perf_counter() - roi_start) * 1000.0
-        
         if points.size == 0:
             return
         
@@ -211,20 +209,20 @@ class LidarClusterNode(Node):
         detections.header = msg.header
         if not detections.header.frame_id:
             detections.header.frame_id = "velodyne"
-        
+
         for i in range(max_label + 1):
             cluster_mask = (labels == i)
             cluster_points = no_ground_pts[cluster_mask]
-            
+
             num_points = cluster_points.shape[0]
             if num_points < self.min_cluster or num_points > self.max_cluster:
                 continue
-                
+
             min_bound = np.min(cluster_points, axis=0)
             max_bound = np.max(cluster_points, axis=0)
             center = (min_bound + max_bound) / 2.0
             extent = max_bound - min_bound
-            
+
             # ------------------------------------------------------------------
             # --- INTEGRATED: GEOMETRIC REAL OBJECT FILTERS ---
             # ------------------------------------------------------------------
@@ -235,11 +233,11 @@ class LidarClusterNode(Node):
 
             # Filter 2: Profile Verification (Target typical Car / SUV dimensions)
             length, width, height = extent[0], extent[1], extent[2]
-            
+
             # Eliminate oversized objects (walls, fences, long hedges)
             if length > 6.5 or width > 3.0 or height > 2.5:
                 continue
-                
+
             # Eliminate tiny scatter noise (stray dust points, floating leaves)
             if length < 0.3 or width < 0.3 or height < 0.3:
                 continue
@@ -248,7 +246,7 @@ class LidarClusterNode(Node):
             if (length > 4.0 and width < 0.5) or (width > 4.0 and length < 0.5):
                 continue
             # ------------------------------------------------------------------
-            
+
             detection = Detection3D()
             detection.header = detections.header
 
@@ -264,18 +262,18 @@ class LidarClusterNode(Node):
             hypothesis.pose.pose.position.z = float(center[2])
             hypothesis.pose.pose.orientation.w = 1.0
             detection.results.append(hypothesis)
-            
+
              # ⚡ FIXED REAL BOX ASSIGNMENTS: Mapping unique 0, 1, 2 axes directly
             bbox = BoundingBox3D()
             bbox.center.position.x = float(center[0])
             bbox.center.position.y = float(center[1])
             bbox.center.position.z = float(center[2])
             bbox.center.orientation.w = 1.0
-            
+
             bbox.size.x = float(length) # Maps length (index 0)
             bbox.size.y = float(width)  # Maps width  (index 1)
             bbox.size.z = float(height) # Maps height (index 2)
-            
+
             detection.bbox = bbox
             detections.detections.append(detection)
 
@@ -283,7 +281,7 @@ class LidarClusterNode(Node):
 
         # Publish results
         self.cluster_pub.publish(detections)
-        
+
         # Publish Debug Cloud
         no_ground_msg = point_cloud2.create_cloud_xyz32(detections.header, no_ground_pts)
         self.no_ground_pub.publish(no_ground_msg)
@@ -371,16 +369,10 @@ class LidarClusterNode(Node):
             print(f"Failed to generate performance plot: {e}")
 
     def fast_pointcloud2_to_numpy(self, msg):
-        """ True zero-copy structure slicing. Eliminates hstack allocations entirely. """
-        """ Contiguous Slicing: In standard PointCloud2 messages (like KITTI),
-            X, Y, and Z fields are adjacent in memory (bytes 0-3, 4-7, and 8-11).
-            Slicing 0:12 captures all three axes at once.
-            Zero New Allocations: Instead of slicing three separate times 
-            and forcing np.hstack to allocate new RAM rows,
-              .view(dtype=np.float32) tells your CPU to read the existing buffer as
-              a sequential sequence of floating-point coordinates. 
-            This avoids any new memory allocation and keeps the operation in-place.
-        """
+        """⚡ PURE ZERO-COPY STRUCTURE SLICING (No implicit row copying)."""
+        if len(msg.data) == 0:
+            return np.empty((0, 3), dtype=np.float32)
+
         # 1. Cast raw bytes into an unstructured 1D uint8 array
         data_arr = np.frombuffer(msg.data, dtype=np.uint8)
         
@@ -388,11 +380,11 @@ class LidarClusterNode(Node):
         reshaped = data_arr.reshape((msg.height * msg.width), msg.point_step)
         
         # 3. Slice the first 12 contiguous bytes (X, Y, Z are sequential: 4 bytes * 3 fields)
-        # Then instantly cast them into 3D Float32 points using a memory view
+        # Then instantly cast them into 3D Float32 points using a reference memory view
+        # ⚡ FIXED: Returning 'points' directly maintains the zero-copy view!
         points = reshaped[:, 0:12].view(dtype=np.float32).reshape(-1, 3)
-        
-        # 4. Filter non-finite elements efficiently
-        return points[np.isfinite(points).all(axis=1)]
+          
+        return points
 
 def main(args=None):
     rclpy.init(args=args)

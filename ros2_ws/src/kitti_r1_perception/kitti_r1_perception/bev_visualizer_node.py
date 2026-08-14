@@ -10,6 +10,22 @@ import cv2
 import transforms3d
 import time
 
+# 5. Draw Fused Detections with Distinct Class Styling
+CLASS_VISUALS = {
+    0: {"name": "Car",        "color": (0, 0, 255)},   # Bright Red Box
+    1: {"name": "Pedestrian", "color": (255, 0, 0)},   # Deep Blue Box
+    2: {"name": "Cyclist",    "color": (0, 255, 255)},  # Neon Yellow Box
+    3: {"name": "Truck",      "color": (0, 128, 255)},   # Orange Box
+    4: {"name": "Bus",        "color": (255, 0, 255)},   # Magenta Box
+    5: {"name": "Motorcycle", "color": (255, 255, 0)},   # Cyan Box
+    6: {"name": "Traffic Sign", "color": (128, 0, 128)},   # Purple Box
+    7: {"name": "Traffic Light", "color": (0, 255, 0)},   # Green Box
+    8: {"name": "Barrier",    "color": (128, 128, 0)},   # Olive Box
+    9: {"name": "Animal",     "color": (0, 128, 128)},   # Teal Box
+    10: {"name": "Other",      "color": (128, 128, 128)}  # Gray Box
+}
+
+
 class BEVVisualizerNode(Node):
     def __init__(self):
         super().__init__('bev_visualizer_node')
@@ -33,6 +49,11 @@ class BEVVisualizerNode(Node):
         self.width = int((self.max_y - self.min_y) / self.resolution)
         self.height = int((self.max_x - self.min_x) / self.resolution)
         self.bridge = CvBridge()
+
+        # ⚡ NEW: Frame timing variables for live FPS tracking
+        self.last_frame_time = None
+        self.current_fps = 0.0
+        self.alpha_fps = 0.1  # Smoothing factor (higher = faster update, lower = smoother)
 
         # ⚡ 1. MEMORY CACHE POINTER FOR TRACKED OBJECTS
         self.latest_fused_msg = None
@@ -103,8 +124,9 @@ class BEVVisualizerNode(Node):
         for dist in ring_distances_meters:
             # Convert real-world meter radius directly to pixel radius
             radius_px = int(dist / self.resolution)
-            # Draw semi-transparent dark grey reference circles
+            # Draw distance circles
             cv2.circle(bev_img, (origin_px_x, origin_px_y), radius_px, (60, 60, 60), thickness=1, lineType=cv2.LINE_AA)
+            
             # Calculate text drawing anchor point (placed along the center forward centerline)
             text_y_px = int((self.max_x - dist) / self.resolution)
             # Only draw the text label if it falls inside the visible image canvas boundary
@@ -116,20 +138,15 @@ class BEVVisualizerNode(Node):
                 cv2.putText(bev_img, f"{int(dist)}m", (origin_px_x + 5, text_y_px + 12), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1, cv2.LINE_AA)
 
-         # 5. Draw Fused Detections with Distinct Class Styling
-        CLASS_VISUALS = {
-            0: {"name": "Car",        "color": (0, 0, 255)},   # Bright Red Box
-            1: {"name": "Pedestrian", "color": (255, 0, 0)},   # Deep Blue Box
-            2: {"name": "Cyclist",    "color": (0, 255, 255)},  # Neon Yellow Box
-            3: {"name": "Truck",      "color": (0, 128, 255)},   # Orange Box
-            4: {"name": "Bus",        "color": (255, 0, 255)},   # Magenta Box
-            5: {"name": "Motorcycle", "color": (255, 255, 0)},   # Cyan Box
-            6: {"name": "Traffic Sign", "color": (128, 0, 128)},   # Purple Box
-            7: {"name": "Traffic Light", "color": (0, 255, 0)},   # Green Box
-            8: {"name": "Barrier",    "color": (128, 128, 0)},   # Olive Box
-            9: {"name": "Animal",     "color": (0, 128, 128)},   # Teal Box
-            10: {"name": "Other",      "color": (128, 128, 128)}  # Gray Box
-        }
+        # ⚡ FIXED: DRAW METRIC GRID ANCHORS EXACTLY ONCE (OUTSIDE THE LOOP)
+        # Draw forward centerline (Y = 0 in world space) points straight up the middle
+        cv2.line(bev_img, (origin_px_x, 0), (origin_px_x, self.height), (45, 45, 48), thickness=1)
+
+        # Draw lateral metric grid lines every 10 meters on the sides
+        for lateral_meter in [-20.0, -10.0, 10.0, 20.0]:
+            lat_px_x = int((self.max_y - lateral_meter) / self.resolution)
+            if 0 <= lat_px_x < self.width:
+                cv2.line(bev_img, (lat_px_x, 0), (lat_px_x, self.height), (35, 35, 38), thickness=1, lineType=cv2.LINE_4)
 
         if fused_msg is not None:
             for det in fused_msg.detections:
@@ -137,6 +154,7 @@ class BEVVisualizerNode(Node):
                 cy = float(det.bbox.center.position.y)
                 sx = float(det.bbox.size.x)     # Length (x-axis)
                 sy = float(det.bbox.size.y)     # Width (y-axis)
+
                 # Skip drawing immediately if the object center is outside the operational cluster ROI
                 if not (self.min_x <= cx <= self.max_x and self.min_y <= cy <= self.max_y):
                     continue
@@ -153,23 +171,20 @@ class BEVVisualizerNode(Node):
                 # X-axis points directly Forward (Longitudinal axis).
                 # Y-axis points directly Left (Lateral axis).
                  
-                 # 1. Local 2D corner bounding matrix tracking coordinates
+                # 1. Local 2D corner bounding matrix tracking coordinates
                 local_corners = np.array([
                     [ sx/2,  sy/2],  # Front-Left
                     [ sx/2, -sy/2],  # Front-Right
                     [-sx/2, -sy/2],  # Rear-Right
                     [-sx/2,  sy/2]   # Rear-Left
-                ])
+                ], dtype=np.float32)
 
                 # Build 2D rotation matrix using computed yaw
                 cos_y, sin_y = np.cos(yaw), np.sin(yaw)
                 rot_mat = np.array([[cos_y, -sin_y],
                                      [sin_y,  cos_y]], dtype=np.float32)
 
-                 # ⚡ FIXED ROW-BY-COLUMN MULTIPLICATION ORDER
-                # Multiplying local_corners directly by the transposed rotation matrix
-                # applies the yaw accurately without introducing transformation distortions.                
-                # Perform matrix transform to world coordinates
+                # Vectorized transform to world coordinates (Fixed row-by-column math order)
                 world_corners = np.dot(local_corners, rot_mat.T) + np.array([cx, cy], dtype=np.float32)
 
                 # Project transformed corners into the aligned asymmetric pixel space
@@ -180,16 +195,15 @@ class BEVVisualizerNode(Node):
                 # ROS 2 Jazzy Attribute Reading
                 cls_id = -1
                 if det.results and len(det.results) > 0:
-                   first_result = det.results[0]  # Hardcoded target index 0 fixes list parsing bugs
-                
-                if hasattr(first_result, 'hypothesis'):
-                    cls_id = int(first_result.hypothesis.class_id)
-                else:
-                    cls_id = int(first_result.class_id)
+                    first_result = det.results[0]
+                    if hasattr(first_result, 'hypothesis'):
+                        cls_id = int(first_result.hypothesis.class_id)
+                    else:
+                        cls_id = int(first_result.class_id)
 
                 visual = CLASS_VISUALS.get(cls_id, {"name": f"ID:{cls_id}", "color": (0, 255, 0)})
                 
-                # Draw rotated box bounding shape
+                # Draw rotated box bounding shape with matching opencv tensor rules
                 cv2.polylines(bev_img, [pix_corners.reshape(-1, 1, 2)], isClosed=True, color=visual["color"], thickness=2)
                 
                 # Draw heading line indicators
@@ -200,22 +214,41 @@ class BEVVisualizerNode(Node):
                 c_py = int((self.max_x - cx) / self.resolution)
                 cv2.line(bev_img, (c_px, c_py), (f_mid_px, f_mid_py), visual["color"], 2)
 
-                # ⚡ TEMPORARY DEBUG LOG FOR HEADING VERIFICATION
-                # Calculate the raw vector pointing direction in pixel coordinates
+                # ⚡ SILENT BACKGROUND HEADING VERIFICATION
                 dx = f_mid_px - c_px
                 dy = f_mid_py - c_py
-                
                 self.get_logger().debug(
                     f"\n[HEADING CHECK] Object Class: {cls_id} | Distance: {distance_meters:.1f}m\n"
                     f"└─ Raw Yaw (Radians): {yaw:.4f} | Quat [w,x,y,z]: [{q.w:.2f}, {q.x:.2f}, {q.y:.2f}, {q.z:.2f}]\n"
                     f"└─ Pixel Delta vector [dX, dY]: [{dx}, {dy}]"
                 )
 
-
                 # Overlay distance tag text string properties
                 display_text = f"{visual['name']} [{distance_meters:.1f}m]"
                 cv2.putText(bev_img, display_text, (int(pix_corners[0, 0]), int(pix_corners[0, 1] - 5)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, visual["color"], 1, cv2.LINE_AA)
+
+        # Calculate pure execution latency before drawing the tracker panel
+        cost_ms = (time.perf_counter() - callback_start) * 1000.0
+
+        # ⚡ COMPUTE LIVE EXPONENTIAL MOVING AVERAGE PIPELINE FPS
+        current_time = time.perf_counter()
+        if self.last_frame_time is not None:
+            delta_time = current_time - self.last_frame_time
+            if delta_time > 0.0:
+                instantaneous_fps = 1.0 / delta_time
+                self.current_fps = (self.alpha_fps * instantaneous_fps) + ((1.0 - self.alpha_fps) * self.current_fps)
+        self.last_frame_time = current_time
+
+        # ⚡ DRAW DIAGNOSTIC OVERLAY PANEL (Top-Left Dashboard)
+        # Draws a dark background backing rectangle for perfect contrast
+        cv2.rectangle(bev_img, (5, 5), (145, 45), (15, 15, 18), -1)
+        
+        # Overlay running FPS (Neon Green) and node render cost (Light Gray)
+        cv2.putText(bev_img, f"PIPELINE: {self.current_fps:.1f} FPS", (12, 22), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1, cv2.LINE_AA)
+        cv2.putText(bev_img, f"BEV COST: {cost_ms:.1f} ms", (12, 38), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1, cv2.LINE_AA)
 
         # 6. Publish processed visualization frame
         bev_msg = self.bridge.cv2_to_imgmsg(bev_img, encoding='bgr8')

@@ -40,10 +40,10 @@ def generate_launch_description():
         description='Logging level (DEBUG, INFO, WARN, ERROR, FATAL)'
     )
     
-    # NEW: Control playback speed
+    # Control playback speed
     play_rate_arg = DeclareLaunchArgument(
         'play_rate',
-        default_value='1.0',
+        default_value='0.5',
         description='Playback rate speed multiplier for ros2 bag play'
     )
 
@@ -83,7 +83,7 @@ def generate_launch_description():
     # BEV ROI parameters
     bev_min_x_arg = DeclareLaunchArgument(
         'bev_min_x',
-        default_value='1.5',
+        default_value='0.1',
         description='BEV minimum forward distance'
     )
     bev_max_x_arg = DeclareLaunchArgument(
@@ -169,7 +169,12 @@ def generate_launch_description():
                         'TORCH_HOME': os.path.join(get_package_share_directory('kitti_r1_perception'), 'models'),
                         'PYTHONUNBUFFERED': '1'
                         },
-        parameters=[{'use_sim_time': sim_time_config, 'model_version': 'yolov8n'}],
+        parameters=[{'use_sim_time': sim_time_config, 'model_version': 'yolov8n'},
+                    {'bev_min_x': LaunchConfiguration('bev_min_x')},
+                    {'bev_max_x': LaunchConfiguration('bev_max_x')},
+                    {'bev_min_y': LaunchConfiguration('bev_min_y')},
+                    {'bev_max_y': LaunchConfiguration('bev_max_y')}
+                   ],
         arguments=['--ros-args',
                    '--log-level',
                     LaunchConfiguration('log_level'),
