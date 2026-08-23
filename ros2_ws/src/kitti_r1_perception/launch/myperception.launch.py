@@ -25,7 +25,7 @@ def generate_launch_description():
     workspace_root = package_share_dir.parents[3]
     print(f"Workspace root directory: {workspace_root}")
     # 3. Safely target your dataset folder relative to the workspace root core
-    default_bag_path = (workspace_root / "2011_09_29_drive_0071_sync").resolve()
+    default_bag_path = (workspace_root / "2011_09_26_drive_0036_sync").resolve()
 
     # Declare the bag path argument using the calculated directory fallback
     bag_path_arg = DeclareLaunchArgument(

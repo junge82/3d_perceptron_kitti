@@ -59,15 +59,15 @@ def parse_oxts_to_messages(oxts_path, stamp):
     if not data:
         return None, None
         
-    # Lat/Lon/Alt indices
+    # Lat/Lon/Alt indices (Columns 0, 1, 2)
     fix = NavSatFix()
     fix.header.stamp = stamp
     fix.header.frame_id = 'gps'
-    fix.latitude = data[0]
-    fix.longitude = data[1]
-    fix.altitude = data[2]
+    fix.latitude = data[0]   # Correct: Extract index 0
+    fix.longitude = data[1]  # Correct: Extract index 1
+    fix.altitude = data[2]   # Correct: Extract index 2
     
-    # Linear velocities (V_east, V_north) converted to Twist message
+    # Linear velocities (V_east, V_north, V_up) (Columns 8, 9, 10)
     twist = TwistStamped()
     twist.header.stamp = stamp
     twist.header.frame_id = 'gps'
@@ -76,10 +76,15 @@ def parse_oxts_to_messages(oxts_path, stamp):
     twist.twist.linear.z = data[10]  # Upward speed
     
     return fix, twist
-
 def create_kitti_raw_bag(sequence_dir, bag_path):
     writer = rosbag2_py.SequentialWriter()
-    writer.open(rosbag2_py.StorageOptions(uri=bag_path, storage_id='mcap'), rosbag2_py.ConverterOptions('', ''))
+    writer.open(
+        rosbag2_py.StorageOptions(uri=bag_path, storage_id='mcap'), 
+        rosbag2_py.ConverterOptions(
+            input_serialization_format='cdr', 
+            output_serialization_format='cdr'
+        )
+    )
     
     # 5 Stream topics to structure camera, tracking and vehicle velocity
     topics = {
@@ -90,8 +95,10 @@ def create_kitti_raw_bag(sequence_dir, bag_path):
         '/kitti/oxts/twist': 'geometry_msgs/msg/TwistStamped'
     }
     
-    for name, msg_type in topics.items():
-        writer.create_topic(rosbag2_py.TopicMetadata(0, name, msg_type, 'cdr'))
+    # FIX: Using enumeration to pass positional index 'idx' explicitly
+    for idx, (name, msg_type) in enumerate(topics.items()):
+        topic_metadata = rosbag2_py.TopicMetadata(idx, name, msg_type, 'cdr')
+        writer.create_topic(topic_metadata)
         
     bridge = CvBridge()
     
@@ -117,7 +124,7 @@ def create_kitti_raw_bag(sequence_dir, bag_path):
         stamp = Time(nanoseconds=current_time_ns).to_msg()
         
         # 1. Left Color Cam
-        cv_left = cv2.imread(left_imgs[i])
+        cv_left = cv2.imread(left_imgs[i], cv2.IMREAD_COLOR)
         if cv_left is not None:
             msg_left = bridge.cv2_to_imgmsg(cv_left, encoding="bgr8")
             msg_left.header.stamp = stamp
@@ -125,7 +132,7 @@ def create_kitti_raw_bag(sequence_dir, bag_path):
             writer.write('/kitti/camera_left/image_raw', serialize_message(msg_left), current_time_ns)
             
         # 2. Right Color Cam
-        cv_right = cv2.imread(right_imgs[i])
+        cv_right = cv2.imread(right_imgs[i], cv2.IMREAD_COLOR)
         if cv_right is not None:
             msg_right = bridge.cv2_to_imgmsg(cv_right, encoding="bgr8")
             msg_right.header.stamp = stamp
@@ -145,12 +152,12 @@ def create_kitti_raw_bag(sequence_dir, bag_path):
         if i % 25 == 0 or i == total_frames - 1:
             print(f"Pack progress status: Frame {i+1}/{total_frames}")
 
+    del writer
     print(f"\nSuccess! Continuous raw sequence saved to: {bag_path}")
 
 if __name__ == '__main__':
-    # Make sure to point this path directly to the extracted inner folder 
-    KITTI_SEQUENCE = "/mnt/fastDisk/kitti3d/raw_data_downloader/2011_09_29/2011_09_29_drive_0071_sync"
-    BAG_OUTPUT = "2011_09_29_drive_0071_sync"
+    KITTI_SEQUENCE = "/mnt/fastDisk/kitti3d/raw_data_downloader/2011_09_26/2011_09_26_drive_0036_sync"
+    BAG_OUTPUT = "2011_09_26_drive_0036_sync"
     
     rclpy.init()
     create_kitti_raw_bag(KITTI_SEQUENCE, BAG_OUTPUT)

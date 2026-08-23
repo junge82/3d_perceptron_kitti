@@ -1,6 +1,10 @@
 # --- Data, Models, and Large Files ---
 # Ignore specific large bag file directories by name
 2011_09_26_drive_0001_sync/
+2011_09_26_drive_0018_sync/
+2011_09_26_drive_0029_sync/
+2011_09_26_drive_0036_sync/
+2011_09_26_drive_0056_sync/
 2011_09_29_drive_0071_sync/
 
 # ROS 2 Data Recordings

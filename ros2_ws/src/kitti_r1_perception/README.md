@@ -68,7 +68,7 @@ Use the provided launch file to start all nodes and the robot state publisher:
 ros2 launch kitti_r1_perception perception_launch.py
 ```
 
-
+pixi run run-pipeline
 
 [Raw PointCloud Data] 
        │  (Published on /kitti/velodyne/pointcloud with frame_id: "velodyne")
