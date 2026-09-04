@@ -1,4 +1,3 @@
-<img width="5120" height="2880" alt="image" src="https://github.com/user-attachments/assets/09832461-bfb8-45aa-8b9b-83f6b28ee508" />
 
 
 # KITTI 3D Perception Pipeline
@@ -11,7 +10,7 @@ The system processes Lidar point clouds and camera images to provide fused 3D ob
 
 ## Prerequisites
 
-- Ubuntu 24.04 (Noble Numbat)
+- Ubuntu 22.04 
 - ROS 2 Jazzy Jalisco
 - Pixi (Package Manager)
 
@@ -37,6 +36,7 @@ To launch the full perception pipeline:
 ```bash
 ros2 launch kitti_r1_perception perception_launch.py
 ```
+pixi run run-pipeline
 
 ### With ROS Bag
 Download bag here: https://s3.eu-central-1.amazonaws.com/avg-kitti/raw_data/2011_09_26_drive_0001/2011_09_26_drive_0001_sync.zip
@@ -112,3 +112,42 @@ Raw Buffer ──────────────────────►
 [frustum_fusion_node-3]  Parallel Matrix Broadcasting | GPU Processing: 0.70 ms | Successfully Fused: 2
 [bev_visualizer_node-4]  ⚡ Asynchronous BEV Render Complete. Pipeline Speed: 10.0 FPS | Canvas Drawing Cost: 1.13ms
 ```
+
+
+### What I Improved
+
+Custom CUDA kernel
+
+
+
+### Benchmark
+
+
+### Known Limitations & Edge Cases
+
+ - A model bizonyos távolságokban hajlamos összekeverni a minibuszokat a motorbiciklikkel
+ - 
+
+
+3d pipeline
+
+RANSAC + DBSCAN (LIDAR): 
+   RANSAC: ground plane removal
+   DBSCAN: clustering the objects
+
+ONNX YOLO (CAMERA): Yolo model exported to ONNX format, highly optimizationed performance
+
+Approximate Time Policy / Message Filter: LIDAR and camera signal synchronized in time
+
+
+### 🛠️ Architecture & Pipeline
+This project implements a highly efficient, hybrid 3D Sensor Fusion pipeline in ROS2:
+1. **LiDAR Pipeline:** Ground plane removal using **RANSAC**, followed by 3D object clustering via **DBSCAN**.
+2. **Camera Pipeline:** 2D object detection using an optimized **ONNX YOLO** model for low-latency inference.
+3. **Synchronization:** Uses ROS2 **Message Filters (ApproximateTime Policy)** to seamlessly sync LiDAR point clouds and camera frames.
+4. **Fusion:** Projects 2D ROI (Region of Interest) into 3D space to filter and fuse LiDAR clusters within the camera frustum.
+
+### 📊 Known Limitations & Error Analysis (Edge Cases)
+- **Class Ambiguity (e.g., Minibus vs. Motorcycle):** Since the 3D bounding box estimation relies on geometric frustum fusion and DBSCAN clustering, spatial occlusion or tightly packed objects can cause cluster overlapping. If a motorcycle is adjacent to a larger vehicle, the spatial heuristics might misclassify the fused cluster.
+- **Future Improvements:** Implementing temporal tracking (e.g., Extended Kalman Filter / SORT) to maintain class consistency across consecutive frames.
+
