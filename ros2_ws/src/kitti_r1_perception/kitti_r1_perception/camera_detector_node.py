@@ -35,6 +35,9 @@ class CameraDetectorNode(Node):
         sys.stdout.reconfigure(line_buffering=True)
         self.callback_group = MutuallyExclusiveCallbackGroup()
         self.bridge = CvBridge()
+        # Initialize metrics before any initialization path can return early.
+        self.inference_latencies = []
+        self.total_latencies = []
         
         # Parameters
         self.declare_parameter('model_version', 'yolov8n') 
@@ -46,7 +49,25 @@ class CameraDetectorNode(Node):
         
         # Single-shot warmup configuration timer
         self.init_timer = self.create_timer(0.1, self.async_model_init)
-    
+
+    def _warmup_onnx(self):
+        warmup_tensor = np.zeros(
+            (1, 3, 384, 1248),
+            dtype=np.float32
+        )
+
+        io_binding = self.session.io_binding()
+        io_binding.bind_cpu_input(self.input_name, warmup_tensor)
+        io_binding.bind_output(
+            self.output_name,
+            device_type='cuda',
+            device_id=0
+        )
+
+        for _ in range(2):
+            self.session.run_with_iobinding(io_binding)
+            io_binding.copy_outputs_to_cpu()
+
     def async_model_init(self):
         self.init_timer.cancel()
         
@@ -78,6 +99,8 @@ class CameraDetectorNode(Node):
         
         self.session = ort.InferenceSession(model_path, sess_options=opts, providers=providers)
         self.input_name = self.session.get_inputs()[0].name
+        self.output_name = self.session.get_outputs()[0].name
+        self._warmup_onnx()
         self.get_logger().info(f"ONNX Runtime successfully bound execution targets: {self.session.get_providers()}")
         
         # Hardcoded class color tracking arrays for instant layout lookups
@@ -129,7 +152,7 @@ class CameraDetectorNode(Node):
 
         h_orig, w_orig, _ = cv_image_resized.shape
 
-        # ⚡ ONNX INPUT PREPARATION: Zero-copy operations 
+        # Prepare a contiguous CPU tensor for the CPU-to-GPU I/O binding transfer.
         # Convert image matrix layout tracking configurations to match ONNX constraints
         img_rgb = cv2.cvtColor(cv_image_resized, cv2.COLOR_BGR2RGB)
         img_chw = img_rgb.transpose((2, 0, 1)) # HWC to CHW
@@ -138,7 +161,22 @@ class CameraDetectorNode(Node):
 
         # Execute ONNX forward execution map
         inference_start = time.perf_counter()
-        outputs = self.session.run(None, {self.input_name: img_tensor})
+        io_binding = self.session.io_binding()
+
+        # ORT copies this CPU NumPy array to the CUDA provider.
+        io_binding.bind_cpu_input(self.input_name, img_tensor)
+
+        # Keep model output on CUDA during execution.
+        io_binding.bind_output(
+            self.output_name,
+            device_type='cuda',
+            device_id=0
+        )
+
+        self.session.run_with_iobinding(io_binding)
+
+        # Your existing NumPy decoder requires CPU output.
+        outputs = io_binding.copy_outputs_to_cpu()
         inference_time_ms = (time.perf_counter() - inference_start) * 1000.0
 
         # Decode YOLO raw structural matrices [1, 84, Anchors]
@@ -223,7 +261,15 @@ class CameraDetectorNode(Node):
 
         # Log complete pipeline performance costs
         node_time_ms = (time.perf_counter() - node_start_time) * 1000.0
-        
+
+        # Record completed callbacks for the latency plot. Keep memory bounded.
+        self.inference_latencies.append(inference_time_ms)
+        self.total_latencies.append(node_time_ms)
+        max_samples = 10000
+        if len(self.total_latencies) > max_samples:
+            self.inference_latencies.pop(0)
+            self.total_latencies.pop(0)
+
         self.get_logger().info(
             f"\n--- ONNX CAMERA PERFORMANCE PROFILE ---\n"
             f"Input Frame Resolution: {w_orig}x{h_orig}\n"
@@ -261,6 +307,7 @@ class CameraDetectorNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
+    node = None
 
     try:
         node = CameraDetectorNode()
@@ -270,8 +317,9 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.save_latency_distribution_plot()
-        node.destroy_node()
+        if node is not None:
+            node.save_latency_distribution_plot()
+            node.destroy_node()
 
         # FIXED: Enforce clear context protection guard for ROS 2 Jazzy
         if rclpy.ok():

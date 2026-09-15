@@ -159,15 +159,54 @@ class FrustumFusionNode(Node):
         pts_3d_cam_filtered = pts_3d_cam[valid_indices]
 
         # 4. Project 3D Camera Points into 2D Pixel Coordinates
-        proj_pts = torch.addmm(torch.zeros(3, device=self.device), pts_3d_cam_filtered, self.K_tensor.t())
-        inv_z = 1.0 / proj_pts[:, 2:3]
-        uv_gpu = proj_pts[:, :2] * inv_z
-
+        # ⚡ 1. FIXED ADDMM: Pre-allocate bias vector matching the exact [N, 3] shape dynamically
+        # Using a flat zeros vector initialized to the current valid point shape prevents shape mismatches.
+        num_valid_pts = pts_3d_cam_filtered.shape[0]
+        bias_tensor = torch.zeros((num_valid_pts, 3), dtype=torch.float32, device=self.device)
         
+        try:
+            proj_pts = torch.addmm(bias_tensor, pts_3d_cam_filtered, self.K_tensor.t())
+            
+            # ⚡ 2. PROTECTION: Clamp Z values to prevent Division-by-Zero / NaN spikes
+            # Enforcing a strict minimum ceiling of 1e-4 blocks any reciprocal float overflows.
+            z_clamped = torch.clamp(proj_pts[:, 2:3], min=1e-4)
+            inv_z = 1.0 / z_clamped
+            
+            # Project onto the 2D image coordinates plane
+            uv_gpu = proj_pts[:, :2] * inv_z
+
+            # ⚡ NEW: VECTORIZED CAMERA FIELD-OF-VIEW CLIPPING MASK
+            # Creates a single boolean mask on the GPU to drop anything outside the image borders
+            in_fov_mask = (uv_gpu[:, 0] >= 0.0) & (uv_gpu[:, 0] <= 1248.0) & \
+                      (uv_gpu[:, 1] >= 0.0) & (uv_gpu[:, 1] <= 384.0)
+
+            # Apply the mask instantly to slice your tracking points down to visible elements
+            valid_indices = torch.where(in_fov_mask)[0]
+            uv_gpu_clipped = uv_gpu[valid_indices]
+            
+        except RuntimeError as e:
+            self.get_logger().error(f"🚨 Matrix Multiplication Shape Mismatch inside Fusion Layer: {str(e)}")
+            return
+        except Exception as e:
+            self.get_logger().error(f"🚨 Projection Execution Exception: {str(e)}")
+            return
+
+        # ⚡ QUICK CODES FOR COORDINATES PROJECTION VERIFICATION
+        # Extract the very first projected point coordinates from the GPU matrix view
+        if uv_gpu_clipped.shape[0] > 0:
+            first_u = float(uv_gpu_clipped[0, 0].item())
+            first_v = float(uv_gpu_clipped[0, 1].item())
+            
+            # Print the data to make sure it tracks inside your target camera bounds
+            self.get_logger().info(
+                f"[PROJECTION ALIGNMENT CHECK] Projected 2D Pixel: (u={first_u:.1f}, v={first_v:.1f}) | "
+                f"Valid 1248x384 Range: {0.0 <= first_u <= 1248.0 and 0.0 <= first_v <= 384.0}",
+                throttle_duration_sec=2.0
+            )
         
 
         # 6. Compute Parallel Distance Matrix via GPU Broadcasting
-        diff = uv_gpu.unsqueeze(1) - pts_2d_tensor.unsqueeze(0)
+        diff = uv_gpu_clipped.unsqueeze(1) - pts_2d_tensor.unsqueeze(0)
         dist_matrix = torch.norm(diff, dim=2) 
         min_dists, best_2d_indices = torch.min(dist_matrix, dim=1)
 
