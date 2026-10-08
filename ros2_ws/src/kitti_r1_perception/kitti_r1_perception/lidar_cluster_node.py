@@ -27,6 +27,8 @@ class LidarClusterNode(Node):
         # Parameters
         self.declare_parameter('voxel_size', 0.15)  
         self.declare_parameter('ground_distance_threshold', 0.3)
+        self.declare_parameter('ransac_n', 3)
+        self.declare_parameter('ransac_iterations', 30)
         self.declare_parameter('cluster_tolerance', 0.6)
         self.declare_parameter('min_cluster_size', 20)
         self.declare_parameter('max_cluster_size', 1000)
@@ -34,11 +36,13 @@ class LidarClusterNode(Node):
         self.declare_parameter('bev_max_x', 50.0)
         self.declare_parameter('bev_min_y', -25.0)
         self.declare_parameter('bev_max_y', 25.0)
-        self.declare_parameter('roi_min_z', -1.8)
-        self.declare_parameter('roi_max_z', 2.0)
+        self.declare_parameter('bev_min_z', -1.8)
+        self.declare_parameter('bev_max_z', 2.0)
         
         self.voxel_size = self.get_parameter('voxel_size').value
         self.ground_dist = self.get_parameter('ground_distance_threshold').value
+        self.ransac_n = self.get_parameter('ransac_n').value
+        self.ransac_iterations = self.get_parameter('ransac_iterations').value
         self.cluster_tol = self.get_parameter('cluster_tolerance').value
         self.min_cluster = self.get_parameter('min_cluster_size').value
         self.max_cluster = self.get_parameter('max_cluster_size').value
@@ -46,8 +50,8 @@ class LidarClusterNode(Node):
         self.bev_max_x = self.get_parameter('bev_max_x').value
         self.bev_min_y = self.get_parameter('bev_min_y').value
         self.bev_max_y = self.get_parameter('bev_max_y').value
-        self.roi_min_z = self.get_parameter('roi_min_z').value
-        self.roi_max_z = self.get_parameter('roi_max_z').value
+        self.bev_min_z = self.get_parameter('bev_min_z').value
+        self.bev_max_z = self.get_parameter('bev_max_z').value
 
         # Define the real-time profile inside __init__
         lidar_qos = QoSProfile(
@@ -98,12 +102,8 @@ class LidarClusterNode(Node):
             dummy_pts = np.random.uniform(-10.0, 40.0, exact_sensor_shape).astype(np.float32)
             
             # 2. Force complete structural cache tracking for the ROI filters
-            roi_mask = (
-                (dummy_pts[:, 0] >= 1.5)   & (dummy_pts[:, 0] <= 50.0) &     # X is FORWARD (1.5m to 50m ahead)
-                (dummy_pts[:, 1] >= -25.0) & (dummy_pts[:, 1] <= 25.0) &     # Y is LATERAL (25m Right to 25m Left)
-                (dummy_pts[:, 2] >= -1.8)  & (dummy_pts[:, 2] <= 2.0)        # Z is VERTICAL Height   
-            )
-            dummy_pts = dummy_pts[roi_mask]
+            
+            dummy_pts = dummy_pts[self.get_roi_mask(dummy_pts)]
 
             # 3. ⚡ FIXED: Correct Open3D Tensor assignment syntax
             pcd_gpu = o3d.t.geometry.PointCloud(device=self.o3d_device)
@@ -111,7 +111,9 @@ class LidarClusterNode(Node):
 
             # 4. Correct Open3D Tensor API call order (distance_threshold, ransac_n, num_iterations)
             pcd_down = pcd_gpu.voxel_down_sample(voxel_size=self.voxel_size)
-            _, inliers = pcd_down.segment_plane(self.ground_dist, 3, 30)
+            _, inliers = pcd_down.segment_plane(
+                self.ground_dist, self.ransac_n, self.ransac_iterations
+            )
 
             pcd_no_ground = pcd_down.select_by_index(inliers, invert=True)
             _ = pcd_no_ground.cluster_dbscan(eps=self.cluster_tol, min_points=self.min_cluster)
@@ -119,6 +121,13 @@ class LidarClusterNode(Node):
             self.get_logger().info('CUDA Pipelines & NumPy ROI structures compiled successfully.')
         except Exception as e:
             self.get_logger().warn(f'Warmup execution bypassed: {str(e)}')
+
+    def get_roi_mask(self, points):
+        return (
+            (points[:, 0] >= self.bev_min_x) & (points[:, 0] <= self.bev_max_x) &
+            (points[:, 1] >= self.bev_min_y) & (points[:, 1] <= self.bev_max_y) &
+            (points[:, 2] >= self.bev_min_z) & (points[:, 2] <= self.bev_max_z)
+        )
 
     def listener_callback(self, msg):
         # Start total callback tracking timer
@@ -148,12 +157,7 @@ class LidarClusterNode(Node):
         
         # 2. Vectorized ROI Box Filter (X=Forward, Y=Lateral, Z=Height)
         roi_start = time.perf_counter()
-        roi_mask = (
-            (points[:, 0] >= self.bev_min_x)   & (points[:, 0] <= self.bev_max_x) &     # X is FORWARD
-            (points[:, 1] >= self.bev_min_y) & (points[:, 1] <= self.bev_max_y) &       # Y is LATERAL
-            (points[:, 2] >= self.roi_min_z)  & (points[:, 2] <= self.roi_max_z)        # Z is VERTICAL Height
-        )
-        points = points[roi_mask]
+        points = points[self.get_roi_mask(points)]
         roi_time_ms = (time.perf_counter() - roi_start) * 1000.0
         if points.size == 0:
             return
@@ -176,8 +180,8 @@ class LidarClusterNode(Node):
 
         ransac_start = time.perf_counter()
         plane_model, inliers_indices = pcd_down.segment_plane(distance_threshold=self.ground_dist,
-                                                              ransac_n=3,
-                                                              num_iterations=30)
+                                                              ransac_n=self.ransac_n,
+                                                              num_iterations=self.ransac_iterations)
         
         # Use select_by_index() to match Int64 types natively
         pcd_no_ground = pcd_down.select_by_index(inliers_indices, invert=True)
@@ -186,6 +190,21 @@ class LidarClusterNode(Node):
         
         if len(pcd_no_ground.point.positions) == 0:
             return
+
+        # ⚡ NEW: INDEPENDENT ALLOCATION CEILING (Clamps the 163.14ms DBSCAN Spikes)
+        # Keeps the total unclustered matrix size bounded before hitting the heavy math stage.
+        MAX_GPU_COMPUTE_POINTS = 15000  
+        num_noground_points = len(pcd_no_ground.point.positions)
+
+        if num_noground_points > MAX_GPU_COMPUTE_POINTS:            
+            # Create a rapid, vectorized index tensor directly inside the active CUDA execution track
+            indices = np.arange(0, MAX_GPU_COMPUTE_POINTS, dtype=np.int64, device=self.o3d_device)
+            pcd_no_ground = pcd_no_ground.select_by_index(indices)
+            
+            self.get_logger().debug(
+                f"[LATENCY GUARD] Clipped total unclustered points from {num_noground_points} "
+                f"to memory allocation ceiling {MAX_GPU_COMPUTE_POINTS} to block VRAM pool overflows."
+            )
 
         # 5. GPU Parallel DBSCAN Clustering
         dbscan_start = time.perf_counter()

@@ -106,15 +106,15 @@ def generate_launch_description():
         default_value='0.10',
         description='BEV image resolution in meters per pixel'
     )
-    roi_min_z_arg = DeclareLaunchArgument(
-        'roi_min_z',
+    bev_min_z_arg = DeclareLaunchArgument(
+        'bev_min_z',
         default_value='-1.8',
-        description='Lidar ROI minimum height'
+        description='BEV minimum height'
     )
-    roi_max_z_arg = DeclareLaunchArgument(
-        'roi_max_z',
+    bev_max_z_arg = DeclareLaunchArgument(
+        'bev_max_z',
         default_value='2.0',
-        description='Lidar ROI maximum height'
+        description='BEV maximum height'
     )
 
     # Lidar Cluster Node
@@ -135,8 +135,8 @@ def generate_launch_description():
             {'bev_max_x': LaunchConfiguration('bev_max_x')},
             {'bev_min_y': LaunchConfiguration('bev_min_y')},
             {'bev_max_y': LaunchConfiguration('bev_max_y')},
-            {'roi_min_z': LaunchConfiguration('roi_min_z')},
-            {'roi_max_z': LaunchConfiguration('roi_max_z')}
+            {'bev_min_z': LaunchConfiguration('bev_min_z')},
+            {'bev_max_z': LaunchConfiguration('bev_max_z')}
         ],
         arguments=['--ros-args', '--log-level', LaunchConfiguration('log_level'),
                    '--log-file-name', 'lidar_cluster_node.log'
@@ -298,8 +298,8 @@ def generate_launch_description():
         bev_min_y_arg,
         bev_max_y_arg,
         bev_resolution_arg,
-        roi_min_z_arg,
-        roi_max_z_arg,
+        bev_min_z_arg,
+        bev_max_z_arg,
         lidar_node,
         camera_node,
         # foxglove_bridge_node,
