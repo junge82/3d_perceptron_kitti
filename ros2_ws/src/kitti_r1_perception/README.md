@@ -70,3 +70,8 @@ ros2 launch kitti_r1_perception perception_launch.py
 
 pixi run run-pipeline
 
+# Benchmark
+
+ rosbag: 2011_09_29_drive_0071_sync
+ running: pixi run run-pipeline
+ telemetry: compute_pipeline_telemetry from the pipeline session

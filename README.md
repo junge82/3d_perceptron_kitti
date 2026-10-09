@@ -52,7 +52,7 @@ ros2 bag play <your_bag_file> --clock
 - **kitti_r1_description_r1_perception**: Implements the perception nodes (Lidar clustering, Camera detection, Frustum fusion, BEV visualization).
 
 - velodyne_viewer.py
-- kitti_calib_projection.py
+- kitti_lidar_camera_projection.py
 
 ## Pixi Comands
 
@@ -68,19 +68,29 @@ changelog: pixi upgrade to open3d support
 
 # Kitti to ROS Bag converter [MCAP]
 
-./kitti_2_rosbag_converter.py
+`mcap_converter/kitti_to_mcap.py` converts a synchronized KITTI raw sequence into an MCAP rosbag, including camera images, calibration, LiDAR, and OXTS data.
 
-parse_kiti_timestamps
-create_fields
-convert_bin_to_pointcloud
-parse_oxts_to_messages
-create_kitti_raw_bag
+- `CameraInfo`: Image dimensions and rectified camera projection calibration.
+- `TF`: Static transforms relating the Velodyne and camera coordinate frames.
 
- - camera_left    -
- - camera_right   -
- - pointcloud     -  
- - oxts/fix       -
- - oxts/twist     -
+Set `KITTI_SEQUENCE`, `KITTI_CALIB_DIR`, and `BAG_OUTPUT` in the script, then run:
+```bash
+python3 mcap_converter/kitti_to_mcap.py
+```
+
+ - camera_left    - '/kitti/camera_left/image_raw': 'sensor_msgs/msg/Image',
+ - camera_right   - '/kitti/camera_right/image_raw': 'sensor_msgs/msg/Image',
+ - camera_info    - '/kitti/camera_left/camera_info': 'sensor_msgs/msg/CameraInfo',
+ - camera_info    - '/kitti/camera_right/camera_info': 'sensor_msgs/msg/CameraInfo',
+ - pointcloud     - '/kitti/velodyne/pointcloud': 'sensor_msgs/msg/PointCloud2',
+ - oxts           - '/kitti/oxts/fix': 'sensor_msgs/msg/NavSatFix',
+ - oxts           - '/kitti/oxts/twist': 'geometry_msgs/msg/TwistStamped',
+ - tf             -'/tf_static': 'tf2_msgs/msg/TFMessage'
+  
+# Kitti Projection of lidar to camera 
+
+ - `./projection_calib/kitti_lidar_camera_projection.py` projects KITTI LiDAR points onto the `image_2` camera image using calibration data, colors them by depth, and can optionally overlay labeled 2D bounding boxes.
+
 
 
 

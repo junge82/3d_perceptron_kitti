@@ -156,8 +156,8 @@ def create_kitti_raw_bag(sequence_dir, bag_path):
     print(f"\nSuccess! Continuous raw sequence saved to: {bag_path}")
 
 if __name__ == '__main__':
-    KITTI_SEQUENCE = "/mnt/fastDisk/kitti3d/raw_data_downloader/2011_09_26/2011_09_26_drive_0036_sync"
-    BAG_OUTPUT = "2011_09_26_drive_0036_sync"
+    KITTI_SEQUENCE = "/mnt/fastDisk/kitti3d/raw_data_downloader/2011_09_29/2011_09_29_drive_0071_sync"
+    BAG_OUTPUT = "2011_09_29_drive_0071_sync"
     
     rclpy.init()
     create_kitti_raw_bag(KITTI_SEQUENCE, BAG_OUTPUT)
