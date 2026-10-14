@@ -1,163 +1,62 @@
-
-
 # KITTI 3D Perception Pipeline
-This is the accompanying repository for the '𝗠𝗼𝘃𝗶𝗻𝗴 𝗳𝗿𝗼𝗺 𝟮𝗗 𝘁𝗼 𝟯𝗗: 𝗕𝘂𝗶𝗹𝗱𝗶𝗻𝗴 𝗮 𝗟𝗶𝗗𝗔𝗥-𝗖𝗮𝗺𝗲𝗿𝗮 𝗙𝘂𝘀𝗶𝗼𝗻 𝗣𝗶𝗽𝗲𝗹𝗶𝗻𝗲 𝗶𝗻 𝗥𝗢𝗦 𝟮' 
 
-The workspace contains a ROS 2 Jazzy 3D perception pipeline developed for the KITTI robot.
-The system processes Lidar point clouds and camera images to provide fused 3D object detections and a Bird's-Eye-View (BEV) visualization.
+A ROS 2 Jazzy application that combines KITTI camera and LiDAR data for object detection, 3D fusion, and bird's-eye-view (BEV) visualization.
 
-- '/kitti/velodyne/pointcloud',
+## What It Does
 
-## Prerequisites
+- **LiDAR:** removes the ground plane and clusters point clouds into 3D detections.
+- **Camera:** runs YOLO object detection on the left KITTI camera stream using ONNX Runtime.
+- **Fusion:** associates camera detections with projected LiDAR cluster centers.
+- **Visualization:** displays the robot and perception output in RViz and publishes a BEV image.
 
-- Ubuntu 22.04 
-- ROS 2 Jazzy Jalisco
-- Pixi (Package Manager)
+## Requirements
 
-## Installation
+- [Pixi](https://pixi.sh/latest/)
+- Linux x86-64 with an NVIDIA GPU and a compatible driver for the configured CUDA 12.9 workflow
+- A KITTI ROS 2 bag. The default launch expects `2011_09_29_drive_0071_sync/` in the repository root.
 
-1. Clone the repository (if applicable) or navigate to the workspace root.
-2. Initialize the environment using Pixi:
-   ```bash
-   pixi install
-   ```
+The Pixi environment supplies ROS 2 Jazzy and the Python dependencies. Review the KITTI dataset terms before downloading or redistributing data.
 
-## Build
+## Run
 
-Build the workspace using `colcon`:
+From the repository root:
+
 ```bash
-pixi run build
-source install/setup.bash
-```
-
-## Running the Pipeline
-
-To launch the full perception pipeline:
-```bash
-ros2 launch kitti_r1_perception perception_launch.py
-```
+pixi install
 pixi run run-pipeline
+```
 
-### With ROS Bag
-Download bag here: https://s3.eu-central-1.amazonaws.com/avg-kitti/raw_data/2011_09_26_drive_0001/2011_09_26_drive_0001_sync.zip
+The task checks the GPU environment, builds the ROS workspace, starts the perception nodes and RViz, then plays the default bag with the ROS simulation clock. Logs are written to `pipeline_session.log`.
 
-Since this project is designed to run with recorded data, ensure you play your ROS bag with the `--clock` argument:
+To play another ROS 2 bag, build and pass its directory to the main launch file:
+
 ```bash
-ros2 bag play <your_bag_file> --clock
+pixi run colcon build --symlink-install
+pixi run bash -c 'source install/setup.bash && ros2 launch kitti_r1_perception myperception.launch.py bag_path:=/absolute/path/to/bag'
 ```
 
-## Packages
+The launch also accepts `play_rate`, `playback_delay`, and LiDAR/BEV tuning arguments. See [`myperception.launch.py`](ros2_ws/src/kitti_r1_perception/launch/myperception.launch.py) for defaults.
 
-- **kitti_r1_description**: Contains the URDF and meshes 
-- **kitti_r1_description_r1_perception**: Implements the perception nodes (Lidar clustering, Camera detection, Frustum fusion, BEV visualization).
+## Topics
 
-- velodyne_viewer.py
-- kitti_lidar_camera_projection.py
+The bag provides `/kitti/camera_left/image_raw`, `/kitti/velodyne/pointcloud`, camera calibration, and transforms. The perception nodes publish:
 
-## Pixi Comands
-
-pixi shell
-
-pixi install / pixi update
-
-pixi run
-
-pixi run test-gpu
-
-changelog: pixi upgrade to open3d support
-
-# Kitti to ROS Bag converter [MCAP]
-
-`mcap_converter/kitti_to_mcap.py` converts a synchronized KITTI raw sequence into an MCAP rosbag, including camera images, calibration, LiDAR, and OXTS data.
-
-- `CameraInfo`: Image dimensions and rectified camera projection calibration.
-- `TF`: Static transforms relating the Velodyne and camera coordinate frames.
-
-Set `KITTI_SEQUENCE`, `KITTI_CALIB_DIR`, and `BAG_OUTPUT` in the script, then run:
-```bash
-python3 mcap_converter/kitti_to_mcap.py
-```
-
- - camera_left    - '/kitti/camera_left/image_raw': 'sensor_msgs/msg/Image',
- - camera_right   - '/kitti/camera_right/image_raw': 'sensor_msgs/msg/Image',
- - camera_info    - '/kitti/camera_left/camera_info': 'sensor_msgs/msg/CameraInfo',
- - camera_info    - '/kitti/camera_right/camera_info': 'sensor_msgs/msg/CameraInfo',
- - pointcloud     - '/kitti/velodyne/pointcloud': 'sensor_msgs/msg/PointCloud2',
- - oxts           - '/kitti/oxts/fix': 'sensor_msgs/msg/NavSatFix',
- - oxts           - '/kitti/oxts/twist': 'geometry_msgs/msg/TwistStamped',
- - tf             -'/tf_static': 'tf2_msgs/msg/TFMessage'
-  
-# Kitti Projection of lidar to camera 
-
- - `./projection_calib/kitti_lidar_camera_projection.py` projects KITTI LiDAR points onto the `image_2` camera image using calibration data, colors them by depth, and can optionally overlay labeled 2D bounding boxes.
-
-
-
-
-# Title: Coordinate systems
-https://mmdetection3d.readthedocs.io/en/v1.0.0rc1/tutorials/coord_sys_tutorial.html
-
-# Kitti sources: 
-- https://colab.research.google.com/github/itberrios/CV_tracking/blob/main/kitti_tracker/1_kitti_object_detection_lidar.ipynb#scrollTo=YgHXWJHwpU4U
-- https://www.cvlibs.net/publications/Geiger2013IJRR.pdf
-
-
-
-### 4.2. Comparative Profiling: Unoptimized Bottlenecks vs. Accelerated GPU Engine
-
-The comparative profiling trace confirms that transitioning from unvectorized iteration blocks to direct memory maps completely eliminates implicit processing overhead and PCIe pipeline stalls:
-
-```text
-[🐌 UNOPTIMIZED BASELINE TOPOLOGY]
-Raw Buffer ──► Generator Iteration [143ms] ──► Fragmented Upload [38ms] ──► Nested Viz Loops [191ms] ──► 224.70ms Latency
-
-[⚡ ACCELERATED HARDWARE TOPOLOGY]
-Raw Buffer ──────────────────────► Zero-Copy Strided View [0.02ms] ──────────────────────► Flat 1D Masking [1.13ms] ──► 22.50ms Latency
-```
-
-#### Final Real-Time System Telemetry Trace (Locked at 10 Hz Dataset Target)
-```text
-[camera_detector_node-2] ONNX Inference: 3.91ms | Zero-Copy IOBinding View | Total Callback Cost: 7.17ms 
-[lidar_cluster_node-1]   Numpy Slice: 0.02ms | GPU VRAM Upload: 0.24ms | GPU CUDA DBSCAN Cluster: 13.19ms
-[frustum_fusion_node-3]  Parallel Matrix Broadcasting | GPU Processing: 0.70 ms | Successfully Fused: 2
-[bev_visualizer_node-4]  ⚡ Asynchronous BEV Render Complete. Pipeline Speed: 10.0 FPS | Canvas Drawing Cost: 1.13ms
-```
-
-
-### What I Improved
-
-Custom CUDA kernel
-
-
-
-### Benchmark
-
-
-### Known Limitations & Edge Cases
-
- - A model bizonyos távolságokban hajlamos összekeverni a minibuszokat a motorbiciklikkel
- - 
-
-
-3d pipeline
-
-RANSAC + DBSCAN (LIDAR): 
-   RANSAC: ground plane removal
-   DBSCAN: clustering the objects
-
-ONNX YOLO (CAMERA): Yolo model exported to ONNX format, highly optimizationed performance
-
-Approximate Time Policy / Message Filter: LIDAR and camera signal synchronized in time
-
-
-### 🛠️ Architecture & Pipeline
-This project implements a highly efficient, hybrid 3D Sensor Fusion pipeline in ROS2:
-1. **LiDAR Pipeline:** Ground plane removal using **RANSAC**, followed by 3D object clustering via **DBSCAN**.
-2. **Camera Pipeline:** 2D object detection using an optimized **ONNX YOLO** model for low-latency inference.
-3. **Synchronization:** Uses ROS2 **Message Filters (ApproximateTime Policy)** to seamlessly sync LiDAR point clouds and camera frames.
-4. **Fusion:** Projects 2D ROI (Region of Interest) into 3D space to filter and fuse LiDAR clusters within the camera frustum.
+- `/detection/camera_2d`
+- `/detection/lidar_clusters` and `/lidar/points_no_ground`
+- `/detection/fused_3d`
+- `/visualization/bev_image`
 
 ### 📊 Known Limitations & Error Analysis (Edge Cases)
 - **Class Ambiguity (e.g., Minibus vs. Motorcycle):** Since the 3D bounding box estimation relies on geometric frustum fusion and DBSCAN clustering, spatial occlusion or tightly packed objects can cause cluster overlapping. If a motorcycle is adjacent to a larger vehicle, the spatial heuristics might misclassify the fused cluster.
 - **Future Improvements:** Implementing temporal tracking (e.g., Extended Kalman Filter / SORT) to maintain class consistency across consecutive frames.
 
+
+**Calibration note:** fusion currently uses hard-coded camera intrinsics and LiDAR-to-camera extrinsics; the launch also publishes placeholder sensor transforms. Bag calibration does not currently update those values. See the [technical report](TECHNICAL_REPORT.md) for architecture, node interfaces, and limitations.
+
+## More Information
+
+- [Developer guide](DEVELOPMENT.md)
+- [Perception package guide](ros2_ws/src/kitti_r1_perception/README.md)
+- [KITTI-to-MCAP converter](mcap_converter/README.md)
+- [Sensor-frame alignment and calibration work](CompVisionKnowHow.md)
+- [Benchmark protocol plan](benchmark_action_plan.md)

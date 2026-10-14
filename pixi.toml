@@ -28,6 +28,7 @@ colcon-common-extensions = ">=0.3.0,<0.4"
 
 # Cross-platform dependencies
 python = ">=3.12,<3.13"
+psutil = ">=7.0,<8"
 numpy = "*"
 opencv = ">=4.12.0,<5"
 transforms3d = ">=0.4.2"
@@ -66,3 +67,4 @@ open3d = "*"
 warmup = { cmd = "python -c \"import open3d, sklearn, pandas; print('--- NVME Cache Warmup Complete ---')\"" }
 validate-gpu = { cmd = "python validate_pipeline_gpu.py", depends-on = ["warmup"] }
 run-pipeline = { cmd = "bash -c 'export PYTHONUNBUFFERED=1 && colcon build --symlink-install && source install/setup.bash && ros2 launch kitti_r1_perception myperception.launch.py playback_delay:=8.0 2>&1 | tee pipeline_session.log'", depends-on = ["validate-gpu"] }
+benchmark-pipeline = { cmd = "python benchmark_pipeline.py", depends-on = ["validate-gpu"] }

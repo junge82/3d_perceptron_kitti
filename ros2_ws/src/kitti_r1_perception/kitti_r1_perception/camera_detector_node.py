@@ -145,16 +145,13 @@ class CameraDetectorNode(Node):
         
         # Parse image from message payload
         cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-
-        # ⚡ TARGET SIZE ALIGNMENT: Match your exact exported baseline shape
-        # This takes <0.5ms and prevents any potential dynamic axis rounding errors
         cv_image_resized = cv2.resize(cv_image, (1248, 384), interpolation=cv2.INTER_LINEAR)
 
         h_orig, w_orig, _ = cv_image_resized.shape
-
         # Prepare a contiguous CPU tensor for the CPU-to-GPU I/O binding transfer.
         # Convert image matrix layout tracking configurations to match ONNX constraints
         img_rgb = cv2.cvtColor(cv_image_resized, cv2.COLOR_BGR2RGB)
+        # Convert HWC image data to the model's NCHW input layout.
         img_chw = img_rgb.transpose((2, 0, 1)) # HWC to CHW
         img_norm = np.ascontiguousarray(img_chw, dtype=np.float32) / 255.0
         img_tensor = np.ascontiguousarray(np.expand_dims(img_norm, axis=0), dtype=np.float32)
@@ -191,7 +188,7 @@ class CameraDetectorNode(Node):
         
         detections = Detection2DArray()
         detections.header = msg.header
-        annotated_frame = cv_image.copy()
+        annotated_frame = cv_image_resized.copy()
 
         if len(filtered_preds) > 0:
             # Step 1: Decode predictions box formats

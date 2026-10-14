@@ -2,9 +2,10 @@ import os
 from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler, OpaqueFunction, TimerAction, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, EmitEvent, ExecuteProcess, LogInfo, RegisterEventHandler, OpaqueFunction, TimerAction, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.event_handlers import OnProcessStart
+from launch.event_handlers import OnProcessExit, OnProcessStart
+from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -43,7 +44,7 @@ def generate_launch_description():
     # Control playback speed
     play_rate_arg = DeclareLaunchArgument(
         'play_rate',
-        default_value='0.5',
+        default_value='1.0',
         description='Playback rate speed multiplier for ros2 bag play'
     )
 
@@ -51,6 +52,12 @@ def generate_launch_description():
         'playback_delay',
         default_value='0.0',
         description='Seconds to wait after RViz starts before playing the bag'
+    )
+
+    shutdown_on_bag_exit_arg = DeclareLaunchArgument(
+        'shutdown_on_bag_exit',
+        default_value='false',
+        description='Shut down the launch system when bag playback exits'
     )
 
     # Lidar cluster tuning parameters
@@ -259,6 +266,7 @@ def generate_launch_description():
         bag_path_string = LaunchConfiguration('bag_path').perform(context)
         rate_string = LaunchConfiguration('play_rate').perform(context)
         delay_float = float(LaunchConfiguration('playback_delay').perform(context))
+        shutdown_on_bag_exit = LaunchConfiguration('shutdown_on_bag_exit').perform(context).lower() in ('1', 'true', 'yes')
 
         bag_play_process = ExecuteProcess(
             cmd=[
@@ -279,8 +287,31 @@ def generate_launch_description():
                 target_action=rviz_node,
                 on_start=[delayed_bag_action]
             )
-        )        
-        return [delay_bag_play]
+        )
+
+        actions = [delay_bag_play]
+        if shutdown_on_bag_exit:
+            actions.insert(0, RegisterEventHandler(
+                event_handler=OnProcessStart(
+                    target_action=bag_play_process,
+                    on_start=[LogInfo(msg='BENCHMARK_BAG_PLAYBACK_STARTED')],
+                )
+            ))
+
+            def on_bag_exit(event, context):
+                exit_code = event.returncode
+                return [
+                    LogInfo(msg=f'BENCHMARK_BAG_EXIT_CODE={exit_code}'),
+                    EmitEvent(event=Shutdown(reason='Bag playback process exited')),
+                ]
+
+            actions.insert(0, RegisterEventHandler(
+                event_handler=OnProcessExit(
+                    target_action=bag_play_process,
+                    on_exit=on_bag_exit,
+                )
+            ))
+        return actions
 
     return LaunchDescription([   
         use_sim_time_arg,  
@@ -288,6 +319,7 @@ def generate_launch_description():
         log_level_arg,
         play_rate_arg,
         playback_delay_arg,
+        shutdown_on_bag_exit_arg,
         voxel_size_arg,
         ground_distance_threshold_arg,
         cluster_tolerance_arg,

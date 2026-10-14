@@ -155,8 +155,8 @@ class FrustumFusionNode(Node):
             return
 
         # ⚡ FIX 1: Extract the index element list array out of the tuple slice
-        valid_indices = torch.where(valid_mask)[0]
-        pts_3d_cam_filtered = pts_3d_cam[valid_indices]
+        depth_valid_indices = torch.where(valid_mask)[0]
+        pts_3d_cam_filtered = pts_3d_cam[depth_valid_indices]
 
         # 4. Project 3D Camera Points into 2D Pixel Coordinates
         # ⚡ 1. FIXED ADDMM: Pre-allocate bias vector matching the exact [N, 3] shape dynamically
@@ -175,14 +175,14 @@ class FrustumFusionNode(Node):
             # Project onto the 2D image coordinates plane
             uv_gpu = proj_pts[:, :2] * inv_z
 
-            # ⚡ NEW: VECTORIZED CAMERA FIELD-OF-VIEW CLIPPING MASK
+            # VECTORIZED CAMERA FIELD-OF-VIEW CLIPPING MASK
             # Creates a single boolean mask on the GPU to drop anything outside the image borders
             in_fov_mask = (uv_gpu[:, 0] >= 0.0) & (uv_gpu[:, 0] <= 1248.0) & \
                       (uv_gpu[:, 1] >= 0.0) & (uv_gpu[:, 1] <= 384.0)
 
             # Apply the mask instantly to slice your tracking points down to visible elements
-            valid_indices = torch.where(in_fov_mask)[0]
-            uv_gpu_clipped = uv_gpu[valid_indices]
+            fov_indices = torch.where(in_fov_mask)[0]
+            uv_gpu_clipped = uv_gpu[fov_indices]
             
         except RuntimeError as e:
             self.get_logger().error(f"🚨 Matrix Multiplication Shape Mismatch inside Fusion Layer: {str(e)}")
@@ -215,7 +215,7 @@ class FrustumFusionNode(Node):
         best_2d_indices_cpu = best_2d_indices.cpu().numpy()
         
         # ⚡ FIX 2: Force the unpacked index array to stay flat (Prevents scalar 0-d drops)
-        valid_indices_cpu = valid_indices.cpu().numpy().flatten()
+        valid_indices_cpu = depth_valid_indices[fov_indices].cpu().numpy().flatten()
 
         # ----------------------------------------------------
         # END METRIC: GPU Calculations Boundary
@@ -223,9 +223,9 @@ class FrustumFusionNode(Node):
         if self.is_cuda:
             self.end_event.record()
             torch.cuda.synchronize()  
-            gpu_time_ms = self.start_event.elapsed_time(self.end_event)
+            compute_time_ms = self.start_event.elapsed_time(self.end_event)
         else:
-            gpu_time_ms = (time.perf_counter() - gpu_start_cpu_fallback) * 1000.0
+            compute_time_ms = (time.perf_counter() - gpu_start_cpu_fallback) * 1000.0
         # 7. Construct final fused message
         fused_detections = Detection3DArray()
         fused_detections.header = lidar_msg.header
@@ -269,44 +269,21 @@ class FrustumFusionNode(Node):
         # Publish results if any objects were successfully projected and tracked
         if len(fused_detections.detections) > 0:
             self.fused_pub.publish(fused_detections)
-            self.get_logger().info(
-                f"\n--- ⚡ GPU FRUSTUM FUSION TARGET TRACE ⚡ ---\n"
-                f"Incoming 3D Clusters : {num_3d}\n"
-                f"Incoming 2D Boxes    : {num_2d}\n"
-                f"Successfully Fused   : {len(fused_detections.detections)}\n"
-                f"GPU Processing Time  : {gpu_time_ms:.2f} ms\n"
-                f"-----------------------------------------\n"
-            )
-        # # ----------------------------------------------------
-        # # LATENCY & AGE CALCULATIONS
-        # # ----------------------------------------------------
-        # # 1. Total time inside this specific node callback
-        # callback_time_ms = (time.perf_counter() - callback_start_time) * 1000.0
 
-        # # 2. Extract accurate ROS system clock time at the moment of publishing
-        # now = self.get_clock().now()
+        lidar_stamp_ns = lidar_msg.header.stamp.sec * 1_000_000_000 + lidar_msg.header.stamp.nanosec
+        camera_stamp_ns = camera_msg.header.stamp.sec * 1_000_000_000 + camera_msg.header.stamp.nanosec
+        sync_slop_ms = abs(lidar_stamp_ns - camera_stamp_ns) / 1e6
+        callback_time_ms = (time.perf_counter() - callback_start_time) * 1000.0
 
-        # # 3. Convert message header timestamps to rclpy Time objects
-        # lidar_stamp = rclpy.time.Time.from_msg(lidar_msg.header.stamp, 
-        #     clock_type=rclpy.time.ClockType.ROS_TIME)
-        # camera_stamp = rclpy.time.Time.from_msg(camera_msg.header.stamp, 
-        #     clock_type=rclpy.time.ClockType.ROS_TIME)
-
-        # # 4. Calculate total E2E processing age (Sensor Capture -> Node Finished)
-        # lidar_e2e_age_ms = (now - lidar_stamp).nanoseconds / 1e6
-        # camera_e2e_age_ms = (now - camera_stamp).nanoseconds / 1e6
-
-        # # 5. Measure the synchronization shift between the two sensor packets
-        # sync_slop_ms = abs((lidar_stamp - camera_stamp).nanoseconds / 1e6)
-
-        # # Print all metrics clearly categorized
-        # self.get_logger().info(
-        #     f"\n--- Fusion PERFORMANCE PROFILE ---\n"
-        #     f"Active Objects     : 3D: {num_3d} | 2D: {num_2d}\n"
-        #     f"Node Callback Cost : GPU Math: {gpu_time_ms:.2f}ms | Total Callback: {callback_time_ms:.2f}ms\n"
-        #     f"Synchronizer Slop  : {sync_slop_ms:.2f}ms\n"
-        #     f"End-to-End Stack Age: LiDAR E2E: {lidar_e2e_age_ms:.2f}ms | Camera E2E: {camera_e2e_age_ms:.2f}ms"
-        # )
+        self.get_logger().info(
+            f"\n--- Frustum Fusion Callback ---\n"
+            f"Input clusters (LiDAR / camera): {num_3d} / {num_2d}\n"
+            f"Fused detections              : {len(fused_detections.detections)}\n"
+            f"Timestamp difference          : {sync_slop_ms:.2f} ms\n"
+            f"Compute interval              : {compute_time_ms:.2f} ms\n"
+            f"Total callback                : {callback_time_ms:.2f} ms\n"
+            f"--------------------------------"
+        )
 
     def box_class_det(self, sx, sy, horizontal_footprint_area, aspect_ratio, inst_hypothesis, camera_class, score):
         # --- 3D BOUNDING BOX VOLUME SANITY FILTERS ---

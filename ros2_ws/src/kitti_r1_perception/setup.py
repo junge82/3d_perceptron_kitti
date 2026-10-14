@@ -3,12 +3,13 @@ from glob import glob
 from setuptools import find_packages, setup
 
 package_name = 'kitti_r1_perception'
+launch_files = [path for path in glob('launch/*.launch.py') if os.path.isfile(path)]
 
 # 1. Start with your base data files
 data_files_list = [
     ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
     ('share/' + package_name, ['package.xml']),
-    (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+    (os.path.join('share', package_name, 'launch'), launch_files),
 ]
 
 # 3. Add all files in torch_home cleanly using a single list comprehension

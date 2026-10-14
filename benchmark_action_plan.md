@@ -6,9 +6,18 @@ Create a reproducible performance benchmark for the KITTI LiDAR-camera perceptio
 
 This plan is for performance evaluation. Detection accuracy requires ground-truth labels and a separate evaluation protocol; do not infer accuracy from runtime telemetry.
 
+## Controller Usage
+
+Run `pixi run benchmark-pipeline` to build the workspace once and perform three independent playback runs by default. The controller samples process-tree CPU/RSS, system CPU/RAM, and device-wide NVIDIA GPU utilization, VRAM, and power while the bag is playing. Playback start and exit markers bound the resource-sampling interval; the launch's clean-shutdown option is enabled only for these benchmark runs.
+
+Each invocation creates a new timestamped directory under `benchmark_results/`. Each run has its own `pipeline.log` and `resource_usage.csv`; the directory also contains hardware/configuration metadata, a per-run CSV, a JSON summary, and a Markdown report. Use `pixi run benchmark-pipeline --help` to override run count, bag, playback rate, sampling interval, timeout, output directory, or to skip the build.
+
+Three repetitions are an initial observational benchmark, not a statistically strong performance claim. Preserve failed/interrupted run statuses and report the successful-run count; run more repetitions for formal comparisons.
+
 ## Current Starting Point
 
-- `compute_pipeline_telemetry.py` parses existing pipeline logs and reports sample count, mean, minimum, and maximum for recognized timing fields.
+- `compute_pipeline_telemetry.py` parses per-node timing fields and reports sample count, mean, median, p95, p99, minimum, and maximum.
+- `benchmark_pipeline.py` runs repeatable bag playback, saves per-run logs and CPU/GPU resource samples, and generates JSON/CSV/Markdown summaries.
 - `validate_pipeline_gpu.py` checks GPU-related dependencies and provider availability. It does not benchmark the ROS 2 pipeline or verify that every operation ran on the GPU.
 - KITTI MCAP recordings are present in the repository. Select and record one exact bag as the primary benchmark input.
 - The report currently describes telemetry observations but not a repeatable run procedure or accuracy results.
@@ -25,7 +34,7 @@ This plan is for performance evaluation. Detection accuracy requires ground-trut
 
 ### 2. Define the run procedure
 
-- [ ] Document exact commands to start the pipeline, play the selected bag, collect logs, and stop the run.
+- [x] Document the benchmark controller command, artifact layout, and opt-in bag-end shutdown behavior.
 - [ ] Specify bag playback rate and whether playback is throttled or accelerated; use the same setting for every run.
 - [ ] Define startup handling: wait for all nodes and model sessions to initialize, then exclude startup and warm-up samples from steady-state statistics.
 - [ ] Run at least five measured repetitions, restarting the pipeline between repetitions. Record failed or interrupted runs rather than silently discarding them.
@@ -42,9 +51,9 @@ This plan is for performance evaluation. Detection accuracy requires ground-trut
 
 ### 4. Implement measurement and artifact capture
 
-- [ ] Extend `compute_pipeline_telemetry.py` to calculate percentile statistics and fail clearly when expected metrics or samples are missing.
-- [ ] Ensure logs identify the run, input recording, software revision, and configuration. Save raw logs rather than only summary output.
-- [ ] Save a machine-readable summary (for example, JSON or CSV) alongside each run's raw log.
+- [x] Extend `compute_pipeline_telemetry.py` to calculate percentile statistics and parse separate camera/LiDAR callback metrics.
+- [x] Ensure benchmark metadata identifies the run, input recording, software revision, and configuration. Save raw per-run logs.
+- [x] Save machine-readable JSON and CSV summaries alongside the Markdown report and raw run logs.
 - [ ] Verify whether existing node timing fields measure the intended boundaries before using them in published claims.
 - [ ] Keep GPU availability checks separate from performance evidence; verify actual provider/device use in the inference and LiDAR stages.
 
@@ -55,7 +64,7 @@ This plan is for performance evaluation. Detection accuracy requires ground-trut
 - [ ] Repeat one run and confirm the documented procedure produces comparable metrics within a stated tolerance.
 - [ ] If comparing revisions or configurations, change one factor at a time and use the same data and environment.
 - [ ] Publish the procedure, raw-log location, summarized results, environment details, and known limitations together.
-- [ ] Update `tech_report_aligned.md` only after the protocol has been executed; label results as measured observations and avoid unsupported historical comparisons.
+- [ ] Update `oldnotes/tech_report_aligned.md` only after the protocol has been executed; label results as measured observations and avoid unsupported historical comparisons.
 
 ## Completion Criteria
 

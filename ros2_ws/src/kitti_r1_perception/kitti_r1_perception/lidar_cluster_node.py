@@ -198,7 +198,12 @@ class LidarClusterNode(Node):
 
         if num_noground_points > MAX_GPU_COMPUTE_POINTS:            
             # Create a rapid, vectorized index tensor directly inside the active CUDA execution track
-            indices = np.arange(0, MAX_GPU_COMPUTE_POINTS, dtype=np.int64, device=self.o3d_device)
+            indices_np = np.arange(MAX_GPU_COMPUTE_POINTS, dtype=np.int64)
+            indices = o3d.core.Tensor(
+                indices_np,
+                dtype=o3d.core.Dtype.Int64,
+                device=self.o3d_device,
+            )            
             pcd_no_ground = pcd_no_ground.select_by_index(indices)
             
             self.get_logger().debug(

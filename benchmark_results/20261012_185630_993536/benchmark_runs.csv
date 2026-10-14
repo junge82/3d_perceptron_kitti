@@ -1,0 +1,4 @@
+run,status,playback_duration_s,resource_samples,system_cpu_pct_mean,pipeline_cpu_pct_of_host_mean,pipeline_cpu_cores_mean,pipeline_rss_mb_peak,system_ram_pct_mean,gpu_util_pct_mean,gpu_util_pct_peak,gpu_memory_used_mb_peak,lidar_callback_mean_ms,camera_callback_mean_ms,lidar_pre_callback_age_mean_ms,camera_pre_callback_age_mean_ms,camera_inference_mean_ms,fusion_compute_mean_ms,fusion_callback_mean_ms,bev_render_mean_ms
+1,completed,220.612,214,98.159,0.063,0.008,4247.48,23.531,6.43,11.0,1348.0,30.886,11.545,3.694,-2.994,5.171,2.348,3.16,2.889
+2,completed,220.704,214,98.871,0.064,0.008,4209.219,23.488,6.009,11.0,1489.0,31.698,11.761,2.763,-2.874,5.289,4.281,5.057,2.906
+3,completed,220.673,214,98.806,0.064,0.008,4222.328,23.506,5.047,11.0,1517.0,31.666,11.939,2.683,-2.883,5.287,2.311,3.098,2.613
