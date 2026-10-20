@@ -168,17 +168,20 @@ class FrustumFusionNode(Node):
             proj_pts = torch.addmm(bias_tensor, pts_3d_cam_filtered, self.K_tensor.t())
             
             # ⚡ 2. PROTECTION: Clamp Z values to prevent Division-by-Zero / NaN spikes
-            # Enforcing a strict minimum ceiling of 1e-4 blocks any reciprocal float overflows.
             z_clamped = torch.clamp(proj_pts[:, 2:3], min=1e-4)
             inv_z = 1.0 / z_clamped
             
             # Project onto the 2D image coordinates plane
             uv_gpu = proj_pts[:, :2] * inv_z
 
-            # VECTORIZED CAMERA FIELD-OF-VIEW CLIPPING MASK
-            # Creates a single boolean mask on the GPU to drop anything outside the image borders
-            in_fov_mask = (uv_gpu[:, 0] >= 0.0) & (uv_gpu[:, 0] <= 1248.0) & \
-                      (uv_gpu[:, 1] >= 0.0) & (uv_gpu[:, 1] <= 384.0)
+            # ⚡ MODIFIED: ADAPTIVE BUFFERED CAMERA FIELD-OF-VIEW CLIPPING MASK
+            # Megengedjük, hogy a közeli, képről lelógó járművek pontjai is bent maradjanak!
+            # Oldalra 200 pixelt (X), függőlegesen 100 pixelt (Y) engedünk ki a kép szélétől.
+            PADDING_X = 200.0
+            PADDING_Y = 100.0
+
+            in_fov_mask = (uv_gpu[:, 0] >= -PADDING_X) & (uv_gpu[:, 0] <= (1248.0 + PADDING_X)) & \
+                          (uv_gpu[:, 1] >= -PADDING_Y) & (uv_gpu[:, 1] <= (384.0 + PADDING_Y))
 
             # Apply the mask instantly to slice your tracking points down to visible elements
             fov_indices = torch.where(in_fov_mask)[0]
@@ -231,8 +234,22 @@ class FrustumFusionNode(Node):
         fused_detections.header = lidar_msg.header
 
         for i, lidar_idx in enumerate(valid_indices_cpu):
-            if min_dists_cpu[i] < self.match_radius:
-                det_3d = lidar_msg.detections[lidar_idx]
+            det_3d = lidar_msg.detections[lidar_idx]
+
+            # ⚡ ÚJ: DINAMIKUS PÁROSÍTÁSI SUGÁR A KÖZELI JÁRMŰVEKNEK
+            # Lekérjük a 3D cluster valós távolságát a saját autónktól
+            cx = float(det_3d.bbox.center.position.x)
+            cy = float(det_3d.bbox.center.position.y)
+            distance_meters = np.hypot(cx, cy)
+            
+            # Alapértelmezett sugár (pl. 50 pixel)
+            current_match_radius = self.match_radius
+            
+            # Ha 10 méteren belül vagyunk, kibővítjük a sugarat (3.0x), hogy elkapjuk a torzult minibuszt!
+            if distance_meters <= 10.0:
+                current_match_radius = self.match_radius * 3.0
+
+            if min_dists_cpu[i] < current_match_radius:
                 best_match_2d = camera_msg.detections[best_2d_indices_cpu[i]]
 
                 # 1. Unpack real-world physical boundaries from the LiDAR box

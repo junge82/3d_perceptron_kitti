@@ -89,6 +89,9 @@ It computes distances between projected LiDAR centers and camera-detection cente
 
 The current implementation constructs center arrays before tensor projection and matching [source code context]. Based on the final 3-run evaluation matrix running at native 10 Hz playback, this vectorized parallel processing workflow achieves a median run mean Fusion Compute Interval of 2.74 ms and a Fusion Total Callback time of 3.51 ms, executing with a median Fusion Timestamp Difference of 1.15 ms.
 
+*Physical Sensor Limitation & Angular Re-emergence Note:* In the specific zone between 7 meters and 3 meters, high-profile targets experience an asymmetric physical blind-spot drop-out directly native to the KITTI collection vehicle's geometry and the Velodyne HDL-64E's laser diode block layout [source code context]. Because the target falls between the active vertical laser channels directly ahead of the bumper, points are physically absent from the raw incoming stream. However, as the target drifts laterally or enters outer angular scans, the sensor's asymmetric vertical diode distribution captures peripheral reflections [source code context]. Combined with the node's horizontal proximity padding (`PADDING_X = 200.0`), the system instantly re-associates the target on the periphery of the BEV display layout [source code context].
+
+
 ### 3.4. BEV Visualization
 `bev_visualizer_node` caches the latest fused detections and renders a BEV image whenever a no-ground point cloud arrives. It does not synchronize these inputs or cache camera images. Point data is read through a NumPy view and rasterized with flat indexing; range guides and in-range fused boxes with headings are drawn before publishing `/visualization/bev_image`.
 

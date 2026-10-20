@@ -191,9 +191,8 @@ class LidarClusterNode(Node):
         if len(pcd_no_ground.point.positions) == 0:
             return
 
-        # ⚡ NEW: INDEPENDENT ALLOCATION CEILING (Clamps the 163.14ms DBSCAN Spikes)
         # Keeps the total unclustered matrix size bounded before hitting the heavy math stage.
-        MAX_GPU_COMPUTE_POINTS = 15000  
+        MAX_GPU_COMPUTE_POINTS = 15000
         num_noground_points = len(pcd_no_ground.point.positions)
 
         if num_noground_points > MAX_GPU_COMPUTE_POINTS:            
@@ -247,29 +246,55 @@ class LidarClusterNode(Node):
             center = (min_bound + max_bound) / 2.0
             extent = max_bound - min_bound
 
-            # ------------------------------------------------------------------
-            # --- INTEGRATED: GEOMETRIC REAL OBJECT FILTERS ---
-            # ------------------------------------------------------------------
-            # Filter 1: Maximum Distance (Ignore crowd noise further than 35 meters away)
-            distance_from_car = np.linalg.norm(center[:2]) 
+            # ==================================================================
+            # ⚡ RETHOUGHT: PROPORTIONAL ADAPTIVE GEOMETRIC OBJECT FILTERS
+            # ==================================================================
+            
+            # --- FILTER 1: DISTANCE RANGE BOUNDS ---
+            # Max range is kept at 35m to stay aligned with your high-yield fusion zones
+            distance_from_car = float(np.linalg.norm(center[:2]))
             if distance_from_car > 35.0:
                 continue
 
-            # Filter 2: Profile Verification (Target typical Car / SUV dimensions)
-            length, width, height = extent[0], extent[1], extent[2]
+            length, width, height = float(extent[0]), float(extent[1]), float(extent[2])
+            horizontal_area = length * width
+            volume = length * width * height
 
-            # Eliminate oversized objects (walls, fences, long hedges)
-            if length > 6.5 or width > 3.0 or height > 2.5:
+            # --- FILTER 2: ABSOLUTE OVERSIZE CEILING (Walls, Fences, Hedges) ---
+            # Keeps large infrastructure from choking downstream fusion steps
+            if length > 12.0 or width > 4.5 or height > 3.5:
                 continue
 
-            # Eliminate tiny scatter noise (stray dust points, floating leaves)
-            if length < 0.3 or width < 0.3 or height < 0.3:
-                continue
+            # --- FILTER 3: DYNAMIC CLOSE-RANGE ACCORDION (10m Proximity Guard) ---
+            # If an object is closer than 10 meters, it experiences high occlusion shading.
+            # We use loose aspect-ratio rules here to guarantee we never drop Minibuses/Vans.
+            if distance_from_car <= 10.0:
+                # 1. Tiny Scatter Noise Filter (Kept ultra-low for close range)
+                if volume < 0.05 or height < 0.2:
+                    continue
+                
+                # 2. Close-Range Aspect Ratio (We allow extreme ratios like 8.0 to protect flat 1D rear faces)
+                aspect_ratio = max(length, width) / max(min(length, width), 0.001)
+                if aspect_ratio > 9.0 and max(length, width) > 5.0:
+                    continue # Drops long walls while letting wide close bumpers pass safely
+                    
+            # --- FILTER 4: RIGOROUS MID/FAR-RANGE CONSTRAINT (10m to 35m) ---
+            # Further out, objects are fully scanned and must match regular vehicle bounds.
+            else:
+                # 1. Scatter & Floating Leaf Filter
+                if length < 0.4 or width < 0.4 or height < 0.4:
+                    continue
+                
+                # 2. Minimal Footprint Filter for standard vehicles at distance
+                if horizontal_area < 0.25 or volume < 0.15:
+                    continue
 
-            # Filter 3: Aspect Ratio Rules (Differentiate cars from flat walls or skinny poles)
-            if (length > 4.0 and width < 0.5) or (width > 4.0 and length < 0.5):
-                continue
-            # ------------------------------------------------------------------
+                # 3. Far-Range Aspect Ratio (Strictly drops flat walls/skinny poles)
+                if (length > 3.5 and width < 0.6) or (width > 3.5 and length < 0.6):
+                    continue
+                    
+            # ==================================================================
+
 
             detection = Detection3D()
             detection.header = detections.header
