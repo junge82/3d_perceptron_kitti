@@ -26,7 +26,7 @@ def generate_launch_description():
     workspace_root = package_share_dir.parents[3]
     print(f"Workspace root directory: {workspace_root}")
     # 3. Safely target your dataset folder relative to the workspace root core
-    default_bag_path = (workspace_root / "2011_09_29_drive_0071_sync").resolve()
+    default_bag_path = (workspace_root / "2011_09_29_drive_0071_sync").resolve() # Adjust this to your actual dataset folder 
 
     # Declare the bag path argument using the calculated directory fallback
     bag_path_arg = DeclareLaunchArgument(
@@ -236,29 +236,32 @@ def generate_launch_description():
                    '--log-file-name', 'rviz2.log'
         ])
 
-    # Static transform publishers
-    map_to_velodyne_tf_publisher = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        name='map_to_velodyne_tf',
-        parameters=[{'use_sim_time': sim_time_config}],
-        arguments=[
-            '--x', '0', '--y', '0', '--z', '0', 
-            '--qx', '0', '--qy', '0', '--qz', '1', '--qw', '0', 
-            '--frame-id', 'map', '--child-frame-id', 'velodyne'
-        ]
-    )
-
+    # 1. World Frame to Core Camera Link (Identity Base)
+# 1. TF: map -> camera (Kamera rögzítése egyenesen az origóhoz)
     map_to_camera_tf_publisher = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
         name='map_to_camera_tf',
         parameters=[{'use_sim_time': sim_time_config}],
         arguments=[
-            '--x', '0', '--y', '0', '--z', '0', 
-            '--qx', '0', '--qy', '0', '--qz', '0', '--qw', '1', 
+            '--x', '0.0', '--y', '0.0', '--z', '0.0', 
+            '--qx', '0.0', '--qy', '0.0', '--qz', '0.0', '--qw', '1.0', 
             '--frame-id', 'map', 
-            '--child-frame-id', 'camera' 
+            '--child-frame-id', 'camera'
+        ]
+    )
+
+    # 2. TF: map -> velodyne (Közvetlen kapcsolat a map-ből, az elején működő 180 fokos pörgéssel!)
+    map_to_velodyne_tf_publisher = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='map_to_velodyne_tf',
+        parameters=[{'use_sim_time': sim_time_config}],
+        arguments=[
+            '--x', '0.2729', '--y', '-0.0020', '--z', '-0.0723', # Éles fizikai eltolások (a calib.txt T oszlopából)
+            '--qx', '0.0', '--qy', '0.0', '--qz', '1.0', '--qw', '0.0', # Az eredeti, jól működő 180 fokos irányzék!
+            '--frame-id', 'map', 
+            '--child-frame-id', 'velodyne'
         ]
     )
 
@@ -337,8 +340,8 @@ def generate_launch_description():
         # foxglove_bridge_node,
         fusion_node,
         bev_node,
-        map_to_velodyne_tf_publisher,
         map_to_camera_tf_publisher,
+        map_to_velodyne_tf_publisher,
         rviz_node,
         OpaqueFunction(function=launch_setup)
     ])

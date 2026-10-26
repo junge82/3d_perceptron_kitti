@@ -206,7 +206,6 @@ class FrustumFusionNode(Node):
                 f"Valid 1248x384 Range: {0.0 <= first_u <= 1248.0 and 0.0 <= first_v <= 384.0}",
                 throttle_duration_sec=2.0
             )
-        
 
         # 6. Compute Parallel Distance Matrix via GPU Broadcasting
         diff = uv_gpu_clipped.unsqueeze(1) - pts_2d_tensor.unsqueeze(0)
@@ -268,10 +267,10 @@ class FrustumFusionNode(Node):
                 for res_2d in best_match_2d.results:
                     inst_hypothesis = ObjectHypothesisWithPose()
                     
-                    # Unpack raw class assignment string primitive from camera tracking
+                    # Unpack raw class assignment string primitive from camera tracking cleanly
                     if hasattr(res_2d, 'hypothesis'):
                         camera_class = int(res_2d.hypothesis.class_id)
-                        score = res_2d.hypothesis.score
+                        score = float(res_2d.hypothesis.score)
                     else:
                         camera_class = int(res_2d.class_id)
                         score = res_2d.score

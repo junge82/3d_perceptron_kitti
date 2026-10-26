@@ -247,11 +247,10 @@ class LidarClusterNode(Node):
             extent = max_bound - min_bound
 
             # ==================================================================
-            # ⚡ RETHOUGHT: PROPORTIONAL ADAPTIVE GEOMETRIC OBJECT FILTERS
+            # ⚡ CONTEXT-AWARE: ADAPTIVE GEOMETRIC OBJECT FILTERS (Város vs Sztráda)
             # ==================================================================
             
             # --- FILTER 1: DISTANCE RANGE BOUNDS ---
-            # Max range is kept at 35m to stay aligned with your high-yield fusion zones
             distance_from_car = float(np.linalg.norm(center[:2]))
             if distance_from_car > 35.0:
                 continue
@@ -260,41 +259,51 @@ class LidarClusterNode(Node):
             horizontal_area = length * width
             volume = length * width * height
 
-            # --- FILTER 2: ABSOLUTE OVERSIZE CEILING (Walls, Fences, Hedges) ---
-            # Keeps large infrastructure from choking downstream fusion steps
-            if length > 12.0 or width > 4.5 or height > 3.5:
+            # ⚡ INTELLIGENS KÖRNYEZET-DETEKTÁLÁS (NumPy alapú gyors csekk)
+            # Megnézzük a klaszter elhelyezkedését oldalirányban (Y tengely)
+            # Ha az objektum az úttest szélén van (pl. Y > 3.5 vagy Y < -3.5 méter), 
+            # és nagyon hosszú (length > 5.5), akkor ez egy városi fal/kerítés!
+            is_lateral_infrastructure = (abs(center[1]) > 3.5) and (length > 5.5)
+
+             # ==================================================================
+            # --- FILTER 2: TRAM & HEAVY VEHICLE OVERSIZE CEILING ---
+            # ==================================================================
+            # Standard European trucks/buses are ~16.5m–18.75m. 
+            # Trams and articulated light-rail units easily span 30m–45m.
+            # We expand boundaries to capture full rail units and angular turn expansions.
+            
+            if length > 45.0 or width > 12.0 or height > 5.5:
                 continue
 
-            # --- FILTER 3: DYNAMIC CLOSE-RANGE ACCORDION (10m Proximity Guard) ---
-            # If an object is closer than 10 meters, it experiences high occlusion shading.
-            # We use loose aspect-ratio rules here to guarantee we never drop Minibuses/Vans.
-            if distance_from_car <= 10.0:
-                # 1. Tiny Scatter Noise Filter (Kept ultra-low for close range)
+            # --- FILTER 3: DINAMIKUS VÁROSI UTCA VS SZTRÁDA LOGIKA ---
+            if distance_from_car <= 15.0:  # Kitoljuk a közeli zónát 15 méterre
                 if volume < 0.05 or height < 0.2:
                     continue
                 
-                # 2. Close-Range Aspect Ratio (We allow extreme ratios like 8.0 to protect flat 1D rear faces)
+                # Szigorú falszűrő csak közel (városban):
+                if is_lateral_infrastructure:
+                    continue
+
                 aspect_ratio = max(length, width) / max(min(length, width), 0.001)
-                if aspect_ratio > 9.0 and max(length, width) > 5.0:
-                    continue # Drops long walls while letting wide close bumpers pass safely
+                if aspect_ratio > 9.0 and max(length, width) > 5.0 and abs(center[1]) > 2.0:
+                    continue
                     
-            # --- FILTER 4: RIGOROUS MID/FAR-RANGE CONSTRAINT (10m to 35m) ---
-            # Further out, objects are fully scanned and must match regular vehicle bounds.
             else:
-                # 1. Scatter & Floating Leaf Filter
+                # Távoli/Közép zóna (15m - 35m) -> Ide esik a 20m-re lévő teherautó!
                 if length < 0.4 or width < 0.4 or height < 0.4:
                     continue
                 
-                # 2. Minimal Footprint Filter for standard vehicles at distance
-                if horizontal_area < 0.25 or volume < 0.15:
+                if horizontal_area < 0.20 or volume < 0.10: # Kicsit engedékenyebb határok a ritka távoli pontoknak
                     continue
 
-                # 3. Far-Range Aspect Ratio (Strictly drops flat walls/skinny poles)
-                if (length > 3.5 and width < 0.6) or (width > 3.5 and length < 0.6):
+                # ⚡ JAVÍTÁS: Ha az objektum 15 méternél messzebb van, a sztrádán haladó 
+                # nagy teherautókat NEM dobjuk el, még akkor sem, ha oldalt vannak (sávváltáskor)!
+                # A falszűrőt (is_lateral_infrastructure) itt teljesen figyelmen kívül hagyjuk.
+                
+                # Csak a teljesen extrém, vékony póznaszerű falakat szűrjük le távolról
+                if (length > 5.0 and width < 0.4) or (width > 5.0 and length < 0.4):
                     continue
-                    
             # ==================================================================
-
 
             detection = Detection3D()
             detection.header = detections.header
