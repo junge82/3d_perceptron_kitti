@@ -51,7 +51,7 @@ The bag provides `/kitti/camera_left/image_raw`, `/kitti/velodyne/pointcloud`, c
 - **Future Improvements:** Implementing temporal tracking (e.g., Extended Kalman Filter / SORT) to maintain class consistency across consecutive frames.
 
 
-**Calibration note:** fusion currently uses hard-coded camera intrinsics and LiDAR-to-camera extrinsics; the launch also publishes placeholder sensor transforms. Bag calibration does not currently update those values. See the [technical report](TECHNICAL_REPORT.md) for architecture, node interfaces, and limitations.
+**Calibration note:** fusion currently uses hard-coded camera intrinsics and LiDAR-to-camera extrinsics; See the [technical report](TECHNICAL_REPORT.md) for architecture, node interfaces, and limitations.
 
 ## More Information
 
