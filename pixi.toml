@@ -66,5 +66,7 @@ open3d = "*"
 [tasks]
 warmup = { cmd = "python -c \"import open3d, sklearn, pandas; print('--- NVME Cache Warmup Complete ---')\"" }
 validate-gpu = { cmd = "python validate_pipeline_gpu.py", depends-on = ["warmup"] }
-run-pipeline = { cmd = "bash -c 'export PYTHONUNBUFFERED=1 && colcon build --symlink-install && source install/setup.bash && ros2 launch kitti_r1_perception myperception.launch.py playback_delay:=8.0 2>&1 | tee pipeline_session.log'", depends-on = ["validate-gpu"] }
+run-pipeline = { cmd = "bash -c 'export PYTHONUNBUFFERED=1 && ROS_LOG_DIR=log && colcon build --symlink-install && source install/setup.bash && ros2 launch kitti_r1_perception myperception.launch.py playback_delay:=8.0 2>&1 | tee pipeline_session.log'", depends-on = ["validate-gpu"] }
+run-separated = { cmd = "bash -c 'export PYTHONUNBUFFERED=1 && export ROS_LOG_DIR=log && colcon build --symlink-install && source install/setup.bash && gnome-terminal --title=\"ROS2 Infrastructure\" -- bash -c \"source install/setup.bash; export ROS_LOG_DIR=log; ros2 launch kitti_r1_perception myperception_infrastructure.launch.py; exec bash\"'", depends-on = ["validate-gpu"] }
+
 benchmark-pipeline = { cmd = "python benchmark_pipeline.py", depends-on = ["validate-gpu"] }

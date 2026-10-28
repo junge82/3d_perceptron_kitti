@@ -237,7 +237,7 @@ def generate_launch_description():
         ])
 
     # 1. World Frame to Core Camera Link (Identity Base)
-# 1. TF: map -> camera (Kamera rögzítése egyenesen az origóhoz)
+    # 1. TF: map -> camera (Kamera rögzítése egyenesen az origóhoz)
     map_to_camera_tf_publisher = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
@@ -316,7 +316,7 @@ def generate_launch_description():
             ))
         return actions
 
-    return LaunchDescription([   
+    return LaunchDescription([
         use_sim_time_arg,  
         bag_path_arg, 
         log_level_arg,

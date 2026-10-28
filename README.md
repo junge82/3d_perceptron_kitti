@@ -2,6 +2,10 @@
 
 A ROS 2 Jazzy application that combines KITTI camera and LiDAR data for object detection, 3D fusion, and bird's-eye-view (BEV) visualization.
 
+## Pipeline Demonstration
+
+![3D Perception Pipeline Processing](video/kimenet.gif)
+
 ## What It Does
 
 - **LiDAR:** removes the ground plane and clusters point clouds into 3D detections.

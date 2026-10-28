@@ -415,7 +415,7 @@ def write_outputs(output_dir: Path, metadata: dict[str, Any], runs: list[dict[st
         "camera_inference_mean_ms": "Pure ONNX Inference",
         "fusion_compute_mean_ms": "Fusion Compute Interval",
         "fusion_callback_mean_ms": "Fusion Total Callback",
-        "bev_render_mean_ms": "Asynchronous BEV Render Complete. Cost",
+        "bev_render_mean_ms": "BEV Total Callback Cost",
     }
     csv_fields = [
         "run",
@@ -485,7 +485,7 @@ def write_outputs(output_dir: Path, metadata: dict[str, Any], runs: list[dict[st
         fusion_callback = timing.get("Fusion Total Callback")
         lidar_callback = timing.get("LiDAR Total Callback Cost")
         camera_inference = timing.get("Pure ONNX Inference")
-        bev_render = timing.get("Asynchronous BEV Render Complete. Cost")
+        bev_render = timing.get("BEV Total Callback Cost")
         report_lines.append(
             "| {run} | {status} | {duration:.2f} | {sys_cpu} | {pipeline_cpu} | {gpu} | {vram} | {lidar_callback} | {camera_inference} | {fusion_compute} | {fusion_callback} | {bev_render} |".format(
                 run=run["run"],

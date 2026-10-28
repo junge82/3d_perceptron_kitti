@@ -242,4 +242,4 @@ marimo/_lsp/
 __marimo__/
 
 #video
-video/
+video/*.mp4
