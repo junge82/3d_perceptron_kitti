@@ -50,12 +50,12 @@ class BEVVisualizerNode(Node):
         self.height = int((self.max_x - self.min_x) / self.resolution)
         self.bridge = CvBridge()
 
-        # ⚡ NEW: Frame timing variables for live FPS tracking
+        # NEW: Frame timing variables for live FPS tracking
         self.last_frame_time = None
         self.current_fps = 0.0
         self.alpha_fps = 0.1  # Smoothing factor (higher = faster update, lower = smoother)
 
-        # ⚡ 1. MEMORY CACHE POINTER FOR TRACKED OBJECTS
+        # 1. MEMORY CACHE POINTER FOR TRACKED OBJECTS
         self.latest_fused_msg = None
 
         bev_qos = QoSProfile(
@@ -64,7 +64,7 @@ class BEVVisualizerNode(Node):
             depth=1  # Drop old messages instantly to prevent lag accumulation
         )
         
-        # ⚡ 2. SUBSCRIBE ONLY TO FINISHED PIPELINE OUTPUTS (NO RAW LIDAR)
+        # 2. SUBSCRIBE ONLY TO FINISHED PIPELINE OUTPUTS (NO RAW LIDAR)
         self.fused_sub = self.create_subscription(
             Detection3DArray, '/detection/fused_3d', self.fused_callback, bev_qos
         )
@@ -91,6 +91,7 @@ class BEVVisualizerNode(Node):
         callback_start = time.perf_counter()
         fused_msg = self.latest_fused_msg
 
+        # --- 1. (ZERO-COPY) ---
         # Direct memory casting of your clean X, Y, Z coordinates (<0.2ms)
         raw_data = np.frombuffer(msg.data, dtype=np.uint8)
         num_points = msg.width * msg.height
@@ -115,9 +116,147 @@ class BEVVisualizerNode(Node):
 
         # --- DRAW CONCENTRIC DISTANCE RINGS ---
         # Real-world sensor origin (0,0) projected into our asymmetric pixel coordinate frame
+        # Compute the pixel coordinates of the origin in the BEV image
         origin_px_x = int((self.max_y - 0.0) / self.resolution)
         origin_px_y = int((self.max_x - 0.0) / self.resolution)
         
+        # Draw metric grid once per frame for consistent reference
+        self._draw_metric_grid(bev_img, origin_px_x, origin_px_y)
+
+        # Fused 3D detections are drawn (asynchronous cache) only if a valid message is available in the cache
+        if fused_msg is not None:
+            self._render_fused_detections(fused_msg, bev_img)
+
+        # graphical render cost in milliseconds for the current callback execution to overlay on the BEV image
+        render_cost_ms = (time.perf_counter() - callback_start) * 1000.0
+
+        # COMPUTE LIVE EMA (EXPONENTIAL MOVING AVERAGE) PIPELINE FPS
+        current_time = time.perf_counter()
+        if self.last_frame_time is not None:
+            delta_time = current_time - self.last_frame_time
+            if delta_time > 0.0:
+                instantaneous_fps = 1.0 / delta_time
+                self.current_fps = (self.alpha_fps * instantaneous_fps) + ((1.0 - self.alpha_fps) * self.current_fps)
+        self.last_frame_time = current_time
+
+        # DRAW DIAGNOSTIC OVERLAY PANEL (Top-Left Dashboard)
+        # Draws a dark background backing rectangle for perfect contrast
+        cv2.rectangle(bev_img, (5, 5), (145, 45), (15, 15, 18), -1)        
+        # Overlay running FPS (Neon Green) and node render cost (Light Gray)
+        cv2.putText(bev_img, f"PIPELINE: {self.current_fps:.1f} FPS", (12, 22), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1, cv2.LINE_AA)
+        cv2.putText(bev_img, f"BEV COST: {render_cost_ms:.1f} ms", (12, 38), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1, cv2.LINE_AA)
+
+        # Publish processed visualization frame
+        bev_msg = self.bridge.cv2_to_imgmsg(bev_img, encoding='bgr8')
+        bev_msg.header = msg.header
+        self.bev_pub.publish(bev_msg)
+        
+        total_cost_ms = (time.perf_counter() - callback_start) * 1000.0
+        self.get_logger().info(
+            f"⚡ Asynchronous BEV Render Complete. Render: {render_cost_ms:.2f}ms | Total Pipeline Callback: {total_cost_ms:.2f}ms", 
+            throttle_duration_sec=2.0
+        )
+
+    def _render_fused_detections(self, fused_msg, bev_img):
+        # 7. DRAW FUSED DETECTIONS WITH DISTINCT CLASS STYLING
+        for det in fused_msg.detections:
+            cx = float(det.bbox.center.position.x)  
+            cy = float(det.bbox.center.position.y)
+            sx = float(det.bbox.size.x)     # Length (x-axis)
+            sy = float(det.bbox.size.y)     # Width (y-axis)
+
+            # Skip drawing immediately if the object center is outside the operational cluster ROI
+            if not (self.min_x <= cx <= self.max_x and self.min_y <= cy <= self.max_y):
+                continue
+                    
+            distance_meters = np.hypot(cx, cy)
+                
+            # Unpack quaternion layout to calculate object yaw heading rotation angle
+            q = det.bbox.center.orientation
+            _, _, yaw = transforms3d.euler.quat2euler([q.w, q.x, q.y, q.z])
+
+            # Generate the bounding box perimeter corners relative to its local center coordinate
+            # In the standard KITTI coordinate frame, 
+            # the tracking definitions are mapped using the standard right-hand rule system:
+            # X-axis points directly Forward (Longitudinal axis).
+            # Y-axis points directly Left (Lateral axis).
+                 
+            # 1. Local 2D corner bounding matrix tracking coordinates
+            local_corners = np.array([
+                    [ sx/2,  sy/2],  # Front-Left
+                    [ sx/2, -sy/2],  # Front-Right
+                    [-sx/2, -sy/2],  # Rear-Right
+                    [-sx/2,  sy/2]   # Rear-Left
+                ], dtype=np.float32)
+
+            # Build 2D rotation matrix using computed yaw
+            cos_y, sin_y = np.cos(yaw), np.sin(yaw)
+            rot_mat = np.array([[cos_y, -sin_y],
+                                [sin_y,  cos_y]], dtype=np.float32)
+
+            # Vectorized transform to world coordinates (Fixed row-by-column math order)
+            world_corners = np.dot(local_corners, rot_mat.T) + np.array([cx, cy], dtype=np.float32)
+
+            # Project transformed corners into the aligned asymmetric pixel space
+            pix_corners = np.zeros_like(world_corners, dtype=np.int32)
+            pix_corners[:, 0] = ((self.max_y - world_corners[:, 1]) / self.resolution).astype(np.int32) 
+            pix_corners[:, 1] = ((self.max_x - world_corners[:, 0]) / self.resolution).astype(np.int32) 
+                
+            # ROS 2 Jazzy Attribute Reading
+            cls_id = self._parse_class_id(det)                    
+
+            # Retrieve class-specific visual properties or fallback to a default style
+            visual = CLASS_VISUALS.get(cls_id, {"name": f"ID:{cls_id}", "color": (0, 255, 0)})
+                
+            # Draw 3D bounding box shape with matching opencv tensor rules
+            cv2.polylines(bev_img, [pix_corners.reshape(-1, 1, 2)], isClosed=True, color=visual["color"], thickness=2)
+                
+            f_mid_px, f_mid_py, center_pixel_x, center_pixel_y = self._draw_heading_vector(bev_img, cx, cy, sx, rot_mat, visual)
+
+            self._log_heading_verification(distance_meters, q, yaw, cls_id, f_mid_px, f_mid_py, center_pixel_x, center_pixel_y)
+
+            # Overlay distance tag text string properties
+            display_text = f"{visual['name']} [{distance_meters:.1f}m]"
+            cv2.putText(bev_img, display_text, (int(pix_corners[0, 0]), int(pix_corners[0, 1] - 5)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, visual["color"], 1, cv2.LINE_AA)
+
+    def _log_heading_verification(self, distance_meters, q, yaw, cls_id, f_mid_px, f_mid_py, c_px, c_py):
+        # SILENT BACKGROUND HEADING VERIFICATION
+        dx = f_mid_px - c_px
+        dy = f_mid_py - c_py
+        self.get_logger().debug(
+                    f"\n[HEADING CHECK] Object Class: {cls_id} | Distance: {distance_meters:.1f}m\n"
+                    f"└─ Raw Yaw (Radians): {yaw:.4f} | Quat [w,x,y,z]: [{q.w:.2f}, {q.x:.2f}, {q.y:.2f}, {q.z:.2f}]\n"
+                    f"└─ Pixel Delta vector [dX, dY]: [{dx}, {dy}]"
+                )
+
+    def _draw_heading_vector(self, bev_img, cx, cy, sx, rot_mat, visual):
+        # Draw heading line indicators
+        front_mid_world = np.dot(np.array([sx/2, 0.0], dtype=np.float32), rot_mat.T) + np.array([cx, cy], dtype=np.float32)
+        # Project the front mid-point into pixel coordinates
+        f_mid_px = int((self.max_y - front_mid_world[1]) / self.resolution)
+        f_mid_py = int((self.max_x - front_mid_world[0]) / self.resolution)
+        # Draw a line from the center of the object to the front mid-point to indicate heading
+        center_pixel_x = int((self.max_y - cy) / self.resolution) # World Y to Pixel X
+        center_pixel_y = int((self.max_x - cx) / self.resolution) # World X to Pixel Y
+        
+        # Draw in opencv cv2.line(kép, (indulo_X, indulo_Y), (veg_X, veg_Y), ...)
+        cv2.line(bev_img, (center_pixel_x, center_pixel_y), (f_mid_px, f_mid_py), visual["color"], 2)
+        return f_mid_px,f_mid_py,center_pixel_x,center_pixel_y
+
+    def _parse_class_id(self, det):
+        """Extracts the class ID from a Detection3D message, handling potential variations in ROS 2 message structures."""
+        if det.results and len(det.results) > 0:
+            first_result = det.results[0]
+            if hasattr(first_result, 'hypothesis'):
+                return int(first_result.hypothesis.class_id)
+            else:
+                return int(first_result.class_id)
+        return -1  # Default to -1 if no valid class ID is found
+
+    def _draw_metric_grid(self, bev_img, origin_px_x, origin_px_y):
         # Target distance thresholds in meters
         ring_distances_meters = [10.0, 20.0, 30.0, 40.0, 50.0]
         
@@ -138,7 +277,7 @@ class BEVVisualizerNode(Node):
                 cv2.putText(bev_img, f"{int(dist)}m", (origin_px_x + 5, text_y_px + 12), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1, cv2.LINE_AA)
 
-        # ⚡ FIXED: DRAW METRIC GRID ANCHORS EXACTLY ONCE (OUTSIDE THE LOOP)
+        # FIXED: DRAW METRIC GRID ANCHORS EXACTLY ONCE (OUTSIDE THE LOOP)
         # Draw forward centerline (Y = 0 in world space) points straight up the middle
         cv2.line(bev_img, (origin_px_x, 0), (origin_px_x, self.height), (45, 45, 48), thickness=1)
 
@@ -147,116 +286,6 @@ class BEVVisualizerNode(Node):
             lat_px_x = int((self.max_y - lateral_meter) / self.resolution)
             if 0 <= lat_px_x < self.width:
                 cv2.line(bev_img, (lat_px_x, 0), (lat_px_x, self.height), (35, 35, 38), thickness=1, lineType=cv2.LINE_4)
-
-        if fused_msg is not None:
-            for det in fused_msg.detections:
-                cx = float(det.bbox.center.position.x)  
-                cy = float(det.bbox.center.position.y)
-                sx = float(det.bbox.size.x)     # Length (x-axis)
-                sy = float(det.bbox.size.y)     # Width (y-axis)
-
-                # Skip drawing immediately if the object center is outside the operational cluster ROI
-                if not (self.min_x <= cx <= self.max_x and self.min_y <= cy <= self.max_y):
-                    continue
-                    
-                distance_meters = np.hypot(cx, cy)
-                
-                # Unpack quaternion layout to calculate object yaw heading rotation angle
-                q = det.bbox.center.orientation
-                _, _, yaw = transforms3d.euler.quat2euler([q.w, q.x, q.y, q.z])
-
-                # Generate the bounding box perimeter corners relative to its local center coordinate
-                # In the standard KITTI coordinate frame, 
-                # the tracking definitions are mapped using the standard right-hand rule system:
-                # X-axis points directly Forward (Longitudinal axis).
-                # Y-axis points directly Left (Lateral axis).
-                 
-                # 1. Local 2D corner bounding matrix tracking coordinates
-                local_corners = np.array([
-                    [ sx/2,  sy/2],  # Front-Left
-                    [ sx/2, -sy/2],  # Front-Right
-                    [-sx/2, -sy/2],  # Rear-Right
-                    [-sx/2,  sy/2]   # Rear-Left
-                ], dtype=np.float32)
-
-                # Build 2D rotation matrix using computed yaw
-                cos_y, sin_y = np.cos(yaw), np.sin(yaw)
-                rot_mat = np.array([[cos_y, -sin_y],
-                                     [sin_y,  cos_y]], dtype=np.float32)
-
-                # Vectorized transform to world coordinates (Fixed row-by-column math order)
-                world_corners = np.dot(local_corners, rot_mat.T) + np.array([cx, cy], dtype=np.float32)
-
-                # Project transformed corners into the aligned asymmetric pixel space
-                pix_corners = np.zeros_like(world_corners, dtype=np.int32)
-                pix_corners[:, 0] = ((self.max_y - world_corners[:, 1]) / self.resolution).astype(np.int32) 
-                pix_corners[:, 1] = ((self.max_x - world_corners[:, 0]) / self.resolution).astype(np.int32) 
-                
-                # ROS 2 Jazzy Attribute Reading
-                cls_id = -1
-                if det.results and len(det.results) > 0:
-                    first_result = det.results[0]
-                    if hasattr(first_result, 'hypothesis'):
-                        cls_id = int(first_result.hypothesis.class_id)
-                    else:
-                        cls_id = int(first_result.class_id)
-
-                visual = CLASS_VISUALS.get(cls_id, {"name": f"ID:{cls_id}", "color": (0, 255, 0)})
-                
-                # Draw rotated box bounding shape with matching opencv tensor rules
-                cv2.polylines(bev_img, [pix_corners.reshape(-1, 1, 2)], isClosed=True, color=visual["color"], thickness=2)
-                
-                # Draw heading line indicators
-                front_mid_world = np.dot(np.array([sx/2, 0.0], dtype=np.float32), rot_mat.T) + np.array([cx, cy], dtype=np.float32)
-                f_mid_px = int((self.max_y - front_mid_world[1]) / self.resolution)
-                f_mid_py = int((self.max_x - front_mid_world[0]) / self.resolution)
-                c_px = int((self.max_y - cy) / self.resolution)
-                c_py = int((self.max_x - cx) / self.resolution)
-                cv2.line(bev_img, (c_px, c_py), (f_mid_px, f_mid_py), visual["color"], 2)
-
-                # ⚡ SILENT BACKGROUND HEADING VERIFICATION
-                dx = f_mid_px - c_px
-                dy = f_mid_py - c_py
-                self.get_logger().debug(
-                    f"\n[HEADING CHECK] Object Class: {cls_id} | Distance: {distance_meters:.1f}m\n"
-                    f"└─ Raw Yaw (Radians): {yaw:.4f} | Quat [w,x,y,z]: [{q.w:.2f}, {q.x:.2f}, {q.y:.2f}, {q.z:.2f}]\n"
-                    f"└─ Pixel Delta vector [dX, dY]: [{dx}, {dy}]"
-                )
-
-                # Overlay distance tag text string properties
-                display_text = f"{visual['name']} [{distance_meters:.1f}m]"
-                cv2.putText(bev_img, display_text, (int(pix_corners[0, 0]), int(pix_corners[0, 1] - 5)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, visual["color"], 1, cv2.LINE_AA)
-
-        # Calculate pure execution latency before drawing the tracker panel
-        cost_ms = (time.perf_counter() - callback_start) * 1000.0
-
-        # ⚡ COMPUTE LIVE EXPONENTIAL MOVING AVERAGE PIPELINE FPS
-        current_time = time.perf_counter()
-        if self.last_frame_time is not None:
-            delta_time = current_time - self.last_frame_time
-            if delta_time > 0.0:
-                instantaneous_fps = 1.0 / delta_time
-                self.current_fps = (self.alpha_fps * instantaneous_fps) + ((1.0 - self.alpha_fps) * self.current_fps)
-        self.last_frame_time = current_time
-
-        # ⚡ DRAW DIAGNOSTIC OVERLAY PANEL (Top-Left Dashboard)
-        # Draws a dark background backing rectangle for perfect contrast
-        cv2.rectangle(bev_img, (5, 5), (145, 45), (15, 15, 18), -1)
-        
-        # Overlay running FPS (Neon Green) and node render cost (Light Gray)
-        cv2.putText(bev_img, f"PIPELINE: {self.current_fps:.1f} FPS", (12, 22), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1, cv2.LINE_AA)
-        cv2.putText(bev_img, f"BEV COST: {cost_ms:.1f} ms", (12, 38), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1, cv2.LINE_AA)
-
-        # 6. Publish processed visualization frame
-        bev_msg = self.bridge.cv2_to_imgmsg(bev_img, encoding='bgr8')
-        bev_msg.header = msg.header
-        self.bev_pub.publish(bev_msg)
-        
-        cost_ms = (time.perf_counter() - callback_start) * 1000.0
-        self.get_logger().info(f"⚡ Asynchronous BEV Render Complete. Cost: {cost_ms:.2f}ms", throttle_duration_sec=2.0)
 
 def main(args=None):
     rclpy.init(args=args)
