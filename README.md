@@ -1,6 +1,6 @@
 # KITTI 3D Perception Pipeline
 
-A production-ready ROS 2 Jazzy application that integrates camera and LiDAR data using geometric sensor fusion, low-latency deep learning inference, and dynamic coordinate transformations.
+A production-ready ROS 2 Jazzy application that integrates camera and LiDAR data using 2D-projected geometric Frustum Fusion, low-latency deep learning 2D inference, and rigid calibration-matrix projections.
 
 ## 👁️ Pipeline Demonstration
 
@@ -10,10 +10,10 @@ A production-ready ROS 2 Jazzy application that integrates camera and LiDAR data
 
 ## 🛠️ Tech Stack & Key Features
 
-- **Robotics Framework:** `ROS 2 Jazzy` utilizing native node composition, life-cycle matching, and simulation clock synchronization.
-- **Deep Learning Inference:** `ONNX Runtime` utilizing CUDA execution providers and explicit I/O binding for real-time 2D object detection.
-- **Point Cloud Processing:** `Open3D` / `PCL` for ground plane removal (RANSAC), Spatial ROI filtering, and GPU-accelerated DBSCAN clustering.
-- **Sensor Fusion Architecture:** Vectorized parallel matrix broadcasting using `PyTorch` CUDA tensors to match 2D camera detections with projected 3D LiDAR cluster centroids.
+- **Robotics Framework:** `ROS 2 Jazzy` utilizing native node composition, simulation clock synchronization, and optimized execution loops.
+- **Deep Learning Inference:** `ONNX Runtime` utilizing CUDA execution providers and explicit I/O binding for real-time 2D object detection on the left KITTI camera stream.
+- **Point Cloud Processing:** `Open3D` and `NumPy` for ground plane removal (RANSAC), Spatial ROI filtering, and GPU-accelerated DBSCAN clustering.
+- **Sensor Fusion Architecture:** Vectorized parallel matrix broadcasting using `PyTorch` CUDA tensors to match 2D camera detections with projected 3D LiDAR cluster centroids via factory-calibrated rigid matrices.
 - **Determinism & Reproducibility:** 100% reproducible environments powered by `Pixi` (RoboStack conda ecosystem) ensuring zero-system-dependency deployment.
 
 ---
@@ -25,18 +25,20 @@ graph TD
     Bag([KITTI ROS 2 Bag]) -->|/kitti/camera_left/image_raw| CamNode[Camera Inference Node: ONNX]
     Bag -->|/kitti/velodyne/pointcloud| LidarNode[LiDAR Processing Node: Open3D]
     
-    CamNode -->|/detection/camera_2d| FusionNode[Geometric 3D Fusion Node]
+    CamNode -->|/detection/camera_2d| FusionNode[Projected Frustum Fusion Node]
     LidarNode -->|/detection/lidar_clusters| FusionNode
     
     FusionNode -->|/detection/fused_3d| RViz[RViz2 Visualization]
     FusionNode -->|/visualization/bev_image| BEV[BEV Stream]
 ```
 
+The data flow spans across four decoupled nodes. Camera and LiDAR detections converge at the fusion layer; the Bird's-Eye-View (BEV) visualizer visualizes the latest processed outputs asynchronously.
+
 ---
 
 ## 📊 Performance & Benchmarking
 
-The end-to-end pipeline has been rigorously profiled across consecutive evaluation runs to guarantee deterministic execution.
+The end-to-end pipeline has been rigorously profiled and automated across multiple consecutive evaluation runs to guarantee deterministic execution metrics.
 
 ### Hardware Environment
 - **CPU:** 12th Gen Intel(R) Core(TM) i5-12400 (6 Cores / 12 Threads)
@@ -48,19 +50,19 @@ Empirical median metrics recorded at standard 1.0x native playback frequency (10
 
 | Pipeline Component | Underlying Operations / Framework | Median Latency | Target Bound |
 | :--- | :--- | :--- | :--- |
-| **LiDAR Processing** | NumPy ROI Filter + **GPU CUDA RANSAC & DBSCAN** | **33.06 ms** | < 100.0 ms (10Hz) |
+| **LiDAR Processing** | NumPy ROI Filter + **Open3D GPU CUDA RANSAC & DBSCAN** | **33.06 ms** | < 100.0 ms (10Hz) |
 | **Camera Inference** | **ONNX Runtime (CUDA Execution Provider)** | **5.01 ms** | < 33.3 ms (30Hz) |
 | **Geometric Fusion** | Association & Extrinsic PyTorch Broadcasting | **2.74 ms** | < 10.0 ms |
 | **BEV Visualization** | Asynchronous Bird's-Eye-View Canvas Render | **2.59 ms** | < 20.0 ms |
 
 ### Key Bottleneck Analysis
-- **GPU CUDA DBSCAN (3D Spatial Clustering):** **21.12 ms** (Represents the primary processing loop footprint, showing a tight variance of <0.42 ms due to the fixed resource allocation ceiling).
-- **Total Camera Callback (Including ROS Message Loop):** **11.31 ms**.
-- **Total Fusion Callback:** **3.51 ms** (Maintained via an optimized `ApproximateTimeSynchronizer` queue).
+- **GPU CUDA DBSCAN (3D Spatial Clustering):** **21.12 ms**. Represents the primary processing loop footprint, showing an exceptionally tight variance of <0.42 ms due to the fixed driver allocation ceilings.
+- **Total Camera Callback Overhead:** **11.31 ms**. While pure ONNX CUDA inference requires only 5.01 ms, the remaining overhead is bound to CPU-side image preprocessing, layout restructuring to NCHW, GPU-CPU memory transfer, and OpenCV Non-Maximum Suppression (NMS).
+- **Total Fusion Callback:** **3.51 ms**. Maintained via an optimized `ApproximateTimeSynchronizer` queue layout.
 
 ### Resource Utilization Summary
 - **Memory Footprint:** Peak VRAM consumption stabilized at **~1435 MiB**.
-- **Hardware Load:** Device-wide GPU utilization maintained a lean **10.0% mean / 15.0% peak**, leaving substantial headroom for tracking, odometry, and path-planning algorithms.
+- **Hardware Load:** Device-wide GPU utilization maintained a lean **10.0% mean / 15.0% peak**, leaving substantial headroom for additional tracking and control modules.
 
 ---
 
@@ -109,13 +111,13 @@ pixi run bash -c 'source install/setup.bash && ros2 launch kitti_r1_perception m
 ### Subscribed Topics (Inputs)
 - `/kitti/camera_left/image_raw` (`sensor_msgs/msg/Image`)
 - `/kitti/velodyne/pointcloud` (`sensor_msgs/msg/PointCloud2`)
-- Extrinsic/Intrinsic TF Transforms (`tf2_msgs/msg/TFMessage`)
+*Note: The pipeline bypasses the ROS 2 TF framework entirely to eliminate CPU-bound transformation lookup latencies, utilizing parameterized rigid calibration matrices directly within GPU VRAM.*
 
 ### Published Topics (Outputs)
 - `/detection/camera_2d` — 2D Bounding Boxes with class probabilities.
 - `/detection/lidar_clusters` — Unassociated spatial clusters.
 - `/lidar/points_no_ground` — Downsampled, filtered raw point cloud.
-- `/detection/fused_3d` — **Fused 3D Bounding Boxes with odometry-compensated velocity vectors.**
+- `/detection/fused_3d` — **Fused 3D Bounding Boxes combining LiDAR spatial geometry with YOLO class probabilities.**
 - `/visualization/bev_image` — Real-time Bird's-Eye-View projection canvas.
 
 ---
@@ -123,11 +125,13 @@ pixi run bash -c 'source install/setup.bash && ros2 launch kitti_r1_perception m
 ## 🔬 Limitations & Error Analysis (Edge Cases)
 
 - **Spatial & Class Ambiguity (e.g., Minibus vs. Motorcycle):** Since 3D bounding box estimation relies on geometric frustum association and DBSCAN clustering, extreme spatial occlusion or tightly packed entities can cause cluster bleeding. For instance, a motorcycle adjacent to a larger vehicle might temporarily combine into a single spatial heuristic cluster.
-- **Odometry Tracking Latency:** While ego-vehicle motion is compensated dynamically to prevent directional snapping on slower moving entities (like pedestrians), sudden rotational changes in vehicle yaw can introduce frame-to-frame association jitter.
+- **Absence of Temporal Tracking & Heading:** The current fusion node operates purely on a frame-by-frame basis without temporal tracking (e.g., Kalman Filters). Consequently, object orientation (yaw headings) and velocity vectors are not yet estimated or accumulated across time.
+- **Temporal Ghosting on BEV Cache:** Because the Fusion node conditionally omits publishing during empty cycles to reduce stream overhead, the asynchronous BEV visualizer retains the last valid detection pointer. In dynamic ego-motion scenarios, this can cause transient "ghost tracks" until the cache is explicitly overwritten by a new synchronized camera-LiDAR pair.
 
 ### Future Roadmap
+- [ ] Integrating a multi-object temporal tracker (Extended Kalman Filter / SORT) to compute object heading, velocity vectors, and handle transient occlusions.
+- [ ] Implementing dynamic Odometry Compensation using KITTI OXTS (GPS/IMU) telemetry data to establish stable global coordinate tracking.
 - [ ] Transitioning the core Fusion node to native ROS 2 Lifecycle C++ Components to achieve zero-copy data transport.
-- [ ] Integrating a multi-object temporal tracker (Extended Kalman Filter / SORT) to robustly bridge spatial occlusions.
 
 ---
 
