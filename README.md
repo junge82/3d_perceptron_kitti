@@ -142,4 +142,4 @@ pixi run bash -c 'source install/setup.bash && ros2 launch kitti_r1_perception m
 - [Perception Package Implementation Details](ros2_ws/src/kitti_r1_perception/README.md)
 - [High-Throughput KITTI-to-MCAP Converter](mcap_converter/README.md)
 - [Sensor Frame Calibration & Mathematics Work](CompVisionKnowHow.md)
-- [Automated Benchmarking Action Plan](benchmark_action_plan.md)
+
