@@ -160,7 +160,7 @@ To confirm long-term stability and eliminate driver-level scheduling anomalies, 
 | BEV render callback | 2.78 ms | 2.57–2.85 ms |
 
 
-Raw logs, one-second resource samples, JSON metadata, and run summaries are linked from the [generated benchmark summary](benchmark_results/20261013_122339_464485/benchmark_summary.md).
+Raw logs, one-second resource samples, JSON metadata, and run summaries are linked from the [generated benchmark summary](benchmark_results/20261027_184942_437711/benchmark_summary.md).
 
 
 📊 Structural Insights from the 1.0x Real-Time Update
