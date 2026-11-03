@@ -12,11 +12,11 @@ A production-ready ROS 2 Jazzy application that integrates camera and LiDAR data
 
 **Python 3.12 · ROS 2 Jazzy · Open3D · OpenCV · PyTorch · ONNX Runtime · CUDA · KITTI · Sensor Fusion · Pixi**
 
-- **Robotics Framework & Core Language:** `ROS 2 Jazzy` és `Python 3.12` környezet native node composition-nel, szimulációs órajel-szinkronizációval és optimalizált végrehajtási ciklusokkal.
-- **Deep Learning Inference:** `ONNX Runtime` CUDA execution provider-rel és explicit I/O binding-gal a bal oldali KITTI kamera stream valós idejű 2D objektumdetektálásához.
-- **Point Cloud & Image Processing:** `Open3D`, `OpenCV` és `NumPy` a talajsík eltávolításához (RANSAC), a térbeli ROI szűréshez, a GPU-gyorsított DBSCAN klaszterezéshez, valamint a BEV (Bird's-Eye-View) képalkotáshoz.
-- **Sensor Fusion Architecture:** Vektorizált, párhuzamos mátrix-broadcasting `PyTorch` CUDA tenzorok segítségével, amely a 2D kamera detektálásokat rendeli hozzá a vetített 3D LiDAR klaszter középpontokhoz gyárilag kalibrált rigid mátrixokon keresztül.
-- **Determinism & Reproducibility:** 100%-ban reprodukálható környezet a `Pixi` (RoboStack condaökoszisztéma) segítségével, garantálva a rendszerszintű függőségektől mentes telepítést.
+- **Robotics Framework & Core Language:** `ROS 2 Jazzy` and `Python 3.12`, with native node composition, simulation-clock synchronization, and optimized execution loops.
+- **Deep Learning Inference:** `ONNX Runtime` with the CUDA execution provider and explicit I/O binding for real-time 2D object detection on the left KITTI camera stream.
+- **Point Cloud & Image Processing:** `Open3D`, `OpenCV`, and `NumPy` for ground-plane removal (RANSAC), spatial ROI filtering, GPU-accelerated DBSCAN clustering, and BEV (Bird's-Eye View) rendering.
+- **Sensor Fusion Architecture:** Vectorized parallel matrix broadcasting with `PyTorch` CUDA tensors associates 2D camera detections with projected 3D LiDAR cluster centroids using factory-calibrated rigid transformation matrices.
+- **Determinism & Reproducibility:** A 100% reproducible environment powered by `Pixi` (the RoboStack conda ecosystem), enabling installation without system-level dependencies.
 
 
 ---
@@ -198,4 +198,3 @@ pixi run bash -c 'source install/setup.bash && ros2 launch kitti_r1_perception m
 - [Perception Package Implementation Details](ros2_ws/src/kitti_r1_perception/README.md)
 - [High-Throughput KITTI-to-MCAP Converter](mcap_converter/README.md)
 - [Sensor Frame Calibration & Mathematics Work](CompVisionKnowHow.md)
-
