@@ -7,33 +7,35 @@ from vision_msgs.msg import Detection3DArray, Detection2DArray, ObjectHypothesis
 import numpy as np
 import message_filters
 import torch 
-import time  # Built-in high-precision CPU timer
+import time  # High-resolution CPU timer.
 
 class FrustumFusionNode(Node):
     def __init__(self):
         super().__init__('frustum_fusion_node')
 
-        # ⚡ CRITICAL FIX: Declare tracking variables first before any callbacks spawn
+        # --- Initialization ---
+        # Initialize callback state before registering subscriptions.
         self.latest_camera_msg = None
 
-        # ⚡ CRITICAL FIX: Force unbuffered stdout line matching stream sync
+        # Enable line-buffered output for timely log display.
         import sys
         sys.stdout.reconfigure(line_buffering=True)
 
-        # Parameters
-        self.declare_parameter('match_radius', 50.0) # Matches your projection scaling limits
+        # --- Fusion parameters ---
+        self.declare_parameter('match_radius', 50.0)  # Maximum 2D association distance in pixels.
         self.match_radius = self.get_parameter('match_radius').value
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.get_logger().info(f'Using device: {self.device}')
 
-        # CUDA Events for precise GPU benchmarking
+        # Create CUDA events for GPU timing when CUDA is available.
         self.is_cuda = self.device.type == 'cuda'
         if self.is_cuda:
             self.start_event = torch.cuda.Event(enable_timing=True)
             self.end_event = torch.cuda.Event(enable_timing=True)
 
-        # 1. Camera Intrinsics Matrix (K)
+        # --- KITTI calibration ---
+        # Camera intrinsic matrix.
         K_kitti_np = np.array([
             [721.5377, 0.0, 609.5593],
             [0.0, 721.5377, 172.854],
@@ -41,7 +43,7 @@ class FrustumFusionNode(Node):
         ], dtype=np.float32)
         self.K_tensor = torch.from_numpy(K_kitti_np).to(self.device)
 
-        # 2. Extrinsic Transformation Matrix [R | t]
+        # LiDAR-to-camera extrinsic transformation matrix.
         T_lidar_to_cam_np = np.array([
             [ 7.533745e-03, -9.999714e-01, -6.166020e-04, -4.069766e-03],
             [ 1.480249e-02,  7.280733e-04, -9.998902e-01, -7.631618e-02],
@@ -52,21 +54,21 @@ class FrustumFusionNode(Node):
         self.R_tensor = torch.from_numpy(T_lidar_to_cam_np[:3, :3]).to(self.device)
         self.t_tensor = torch.from_numpy(T_lidar_to_cam_np[:3, 3]).to(self.device)
 
-        # ⚡ FIX 1: Change to RELIABLE to establish an active link with your up-stream nodes
+        # Use reliable delivery and a bounded queue for synchronized inputs.
         optimized_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
-            depth=5 # Healthy depth allowance for synchronizer pairing buffers
+            depth=5  # Buffer a small number of messages for synchronization.
         )
 
-        # ⚡ FIX 2: Use a Mutually Exclusive Callback Group to prevent deadlocks in multi-threaded execution
-        # ⚡ ISOLATE THREAD QUEUE TO PREVENT RVIZ2 STALLING
+        # Ensure camera and LiDAR subscription callbacks do not run concurrently.
         self.callback_group = MutuallyExclusiveCallbackGroup()
 
-        # Publisher for fused 3D detections
+        # --- ROS interfaces ---
+        # Publish fused 3D detections.
         self.fused_pub = self.create_publisher(Detection3DArray, '/detection/fused_3d', 2)
 
-        # # TRUE SYNCHRONIZATION: Use message_filters to pair 2D and 3D detections based on timestamps
+        # Subscribe to camera and LiDAR detections for timestamp-based pairing.
         self.camera_filter = message_filters.Subscriber(self,
             Detection2DArray, 
             '/detection/camera_2d',
@@ -79,24 +81,24 @@ class FrustumFusionNode(Node):
             qos_profile=optimized_qos,
             callback_group=self.callback_group)
 
-        # Use ApproximateTimeSynchronizer to allow for slight timestamp mismatches
+        # Allow a small timestamp difference between sensor detections.
         self.ts = message_filters.ApproximateTimeSynchronizer(
             [self.camera_filter, self.lidar_filter],
-            queue_size=3, # Small queue stops backup leakage completely
-            slop=0.03,  # Forces strict 30ms realt-time frame pairing, but allows for slight jitter
+            queue_size=3,  # Keep the synchronization queue bounded.
+            slop=0.03,  # Allow up to 30 ms of timestamp difference.
         )
         self.ts.registerCallback(self.sync_callback)
         self.get_logger().info("Vectorized CUDA Frustum Fusion Engine Activated Successfully.")
 
     def sync_callback(self, camera_msg, lidar_msg):
-        # Start callback CPU timer
+        # --- Callback timing and input validation ---
         callback_start_time = time.perf_counter()        
 
-        # Escape safely if the camera hasn't published anything yet        
+        # Skip processing if a camera message is unavailable.
         if camera_msg is None:
             self.get_logger().info(
                 "Fusion Layer Status: [WARMUP] Waiting for camera msgs...",
-                throttle_duration_sec=1.5  # 💡 Throttles log output to prevent console clutter
+                throttle_duration_sec=1.5  # Limit repeated warmup messages.
             )
             return
 
@@ -112,18 +114,18 @@ class FrustumFusionNode(Node):
         else:
             gpu_start_cpu_fallback = time.perf_counter()
 
-        # ⚡ ADAPTIVE UNPACKER: Adapts to your exact ONNX Camera Node message structure
+        # --- Extract detection coordinates ---
         try:
-            # 1. Extract 3D LiDAR Points
+            # Extract 3D LiDAR cluster centers.
             lidar_pts_np = np.array([
                 [float(d.bbox.center.position.x), float(d.bbox.center.position.y), float(d.bbox.center.position.z)]
                 for d in lidar_msg.detections
             ], dtype=np.float32)
             
-            # 2. Extract 2D Camera Points adaptively
+            # Extract 2D camera detection centers across supported message layouts.
             camera_pts = []
             for c in camera_msg.detections:
-                # Check if the center object uses .position layer (like some 3D messages or custom shapes)
+                # Handle centers represented as either a nested position or direct coordinates.
                 if hasattr(c.bbox.center, 'position'):
                     cx = float(c.bbox.center.position.x)
                     cy = float(c.bbox.center.position.y)
@@ -131,7 +133,7 @@ class FrustumFusionNode(Node):
                     cx = float(c.bbox.center.x)
                     cy = float(c.bbox.center.y)
                 else:
-                    # Deep inspection if custom attributes are wrapped inside
+                    # Report unsupported message layouts.
                     self.get_logger().error(f"Unknown center schema attributes: {dir(c.bbox.center)}")
                     return
                 camera_pts.append([cx, cy])
@@ -145,45 +147,43 @@ class FrustumFusionNode(Node):
         pts_3d_lidar = torch.as_tensor(lidar_pts_np, device=self.device)
         pts_2d_tensor = torch.as_tensor(camera_pts_np, device=self.device)
 
-        # 2. Transform 3D Lidar Points to Camera Frame
+        # --- Project LiDAR centers into the camera image ---
+        # Transform LiDAR points into the camera coordinate frame.
         pts_3d_cam = torch.addmm(self.t_tensor, pts_3d_lidar, self.R_tensor.t())
 
-        # 3. Filter points behind the camera
+        # Remove points behind or too close to the camera.
         valid_mask = pts_3d_cam[:, 2] > 0.1
         if not torch.any(valid_mask):
             self.get_logger().info("Sync Match: No valid 3D points in camera frame, skipping frame.")
             return
 
-        # ⚡ FIX 1: Extract the index element list array out of the tuple slice
+        # Retain the indices of points in front of the camera.
         depth_valid_indices = torch.where(valid_mask)[0]
         pts_3d_cam_filtered = pts_3d_cam[depth_valid_indices]
 
-        # 4. Project 3D Camera Points into 2D Pixel Coordinates
-        # ⚡ 1. FIXED ADDMM: Pre-allocate bias vector matching the exact [N, 3] shape dynamically
-        # Using a flat zeros vector initialized to the current valid point shape prevents shape mismatches.
+        # Prepare a zero bias matrix with one row per valid point.
         num_valid_pts = pts_3d_cam_filtered.shape[0]
         bias_tensor = torch.zeros((num_valid_pts, 3), dtype=torch.float32, device=self.device)
         
         try:
             proj_pts = torch.addmm(bias_tensor, pts_3d_cam_filtered, self.K_tensor.t())
             
-            # ⚡ 2. PROTECTION: Clamp Z values to prevent Division-by-Zero / NaN spikes
+            # Clamp depth to avoid division by zero and invalid projections.
             z_clamped = torch.clamp(proj_pts[:, 2:3], min=1e-4)
             inv_z = 1.0 / z_clamped
             
-            # Project onto the 2D image coordinates plane
+            # Convert projected points to image pixel coordinates.
             uv_gpu = proj_pts[:, :2] * inv_z
 
-            # ⚡ MODIFIED: ADAPTIVE BUFFERED CAMERA FIELD-OF-VIEW CLIPPING MASK
-            # Megengedjük, hogy a közeli, képről lelógó járművek pontjai is bent maradjanak!
-            # Oldalra 200 pixelt (X), függőlegesen 100 pixelt (Y) engedünk ki a kép szélétől.
+            # Retain nearby objects that extend beyond the image boundaries.
+            # Extend the horizontal and vertical bounds by 200 and 100 pixels.
             PADDING_X = 200.0
             PADDING_Y = 100.0
 
             in_fov_mask = (uv_gpu[:, 0] >= -PADDING_X) & (uv_gpu[:, 0] <= (1248.0 + PADDING_X)) & \
                           (uv_gpu[:, 1] >= -PADDING_Y) & (uv_gpu[:, 1] <= (384.0 + PADDING_Y))
 
-            # Apply the mask instantly to slice your tracking points down to visible elements
+            # Keep projections within the buffered camera field of view.
             fov_indices = torch.where(in_fov_mask)[0]
             uv_gpu_clipped = uv_gpu[fov_indices]
             
@@ -194,80 +194,77 @@ class FrustumFusionNode(Node):
             self.get_logger().error(f"🚨 Projection Execution Exception: {str(e)}")
             return
 
-        # ⚡ QUICK CODES FOR COORDINATES PROJECTION VERIFICATION
-        # Extract the very first projected point coordinates from the GPU matrix view
+        # --- Optional projection diagnostics ---
+        # Inspect the first valid projected point.
         if uv_gpu_clipped.shape[0] > 0:
             first_u = float(uv_gpu_clipped[0, 0].item())
             first_v = float(uv_gpu_clipped[0, 1].item())
             
-            # Print the data to make sure it tracks inside your target camera bounds
+            # Log whether the projected point falls inside the image bounds.
             self.get_logger().info(
                 f"[PROJECTION ALIGNMENT CHECK] Projected 2D Pixel: (u={first_u:.1f}, v={first_v:.1f}) | "
                 f"Valid 1248x384 Range: {0.0 <= first_u <= 1248.0 and 0.0 <= first_v <= 384.0}",
                 throttle_duration_sec=2.0
             )
 
-        # 6. Compute Parallel Distance Matrix via GPU Broadcasting
+        # --- Associate projected points with camera detections ---
+        # Compute pairwise pixel distances using tensor broadcasting.
         diff = uv_gpu_clipped.unsqueeze(1) - pts_2d_tensor.unsqueeze(0)
         dist_matrix = torch.norm(diff, dim=2) 
         min_dists, best_2d_indices = torch.min(dist_matrix, dim=1)
 
-        # Bring tracking configurations back to host space
+        # Copy association results to CPU for message construction.
         min_dists_cpu = min_dists.cpu().numpy()
         best_2d_indices_cpu = best_2d_indices.cpu().numpy()
         
-        # ⚡ FIX 2: Force the unpacked index array to stay flat (Prevents scalar 0-d drops)
+        # Flatten the valid indices to preserve one-dimensional indexing.
         valid_indices_cpu = depth_valid_indices[fov_indices].cpu().numpy().flatten()
 
-        # ----------------------------------------------------
-        # END METRIC: GPU Calculations Boundary
-        # ----------------------------------------------------
+        # --- End of timed computation ---
         if self.is_cuda:
             self.end_event.record()
             torch.cuda.synchronize()  
             compute_time_ms = self.start_event.elapsed_time(self.end_event)
         else:
             compute_time_ms = (time.perf_counter() - gpu_start_cpu_fallback) * 1000.0
-        # 7. Construct final fused message
+        # --- Build fused detections ---
         fused_detections = Detection3DArray()
         fused_detections.header = lidar_msg.header
 
         for i, lidar_idx in enumerate(valid_indices_cpu):
             det_3d = lidar_msg.detections[lidar_idx]
 
-            # ⚡ ÚJ: DINAMIKUS PÁROSÍTÁSI SUGÁR A KÖZELI JÁRMŰVEKNEK
-            # Lekérjük a 3D cluster valós távolságát a saját autónktól
+            # Compute the cluster distance from the sensor origin.
             cx = float(det_3d.bbox.center.position.x)
             cy = float(det_3d.bbox.center.position.y)
             distance_meters = np.hypot(cx, cy)
             
-            # Alapértelmezett sugár (pl. 50 pixel)
+            # Start with the configured association radius.
             current_match_radius = self.match_radius
             
-            # Ha 10 méteren belül vagyunk, kibővítjük a sugarat (3.0x), hogy elkapjuk a torzult minibuszt!
+            # Increase the radius for nearby objects to accommodate larger image distortions.
             if distance_meters <= 10.0:
                 current_match_radius = self.match_radius * 3.0
 
             if min_dists_cpu[i] < current_match_radius:
                 best_match_2d = camera_msg.detections[best_2d_indices_cpu[i]]
 
-                # 1. Unpack real-world physical boundaries from the LiDAR box
-                sx = det_3d.bbox.size.x  # Longitudinal size (Length)
-                sy = det_3d.bbox.size.y  # Lateral size (Width)
-                sz = det_3d.bbox.size.z  # Vertical size (Height)
+                # Read the LiDAR box dimensions.
+                sx = det_3d.bbox.size.x  # Length along the longitudinal axis.
+                sy = det_3d.bbox.size.y  # Width along the lateral axis.
+                sz = det_3d.bbox.size.z  # Height along the vertical axis.
                 
-                # 2. Compute advanced geometric ratios [1]
-                # A car footprint area is large; a bike is a narrow line strip [1]
+                # Compute geometric features for class correction.
                 horizontal_footprint_area = sx * sy
-                aspect_ratio = max(sx, sy) / max(min(sx, sy), 0.001) # Length-to-width ratio
+                aspect_ratio = max(sx, sy) / max(min(sx, sy), 0.001)  # Length-to-width ratio.
                 
-                # Clear previous results to prevent stacking duplicates
+                # Replace any existing class hypotheses.
                 det_3d.results = []
 
                 for res_2d in best_match_2d.results:
                     inst_hypothesis = ObjectHypothesisWithPose()
                     
-                    # Unpack raw class assignment string primitive from camera tracking cleanly
+                    # Read the camera class ID and confidence across supported message layouts.
                     if hasattr(res_2d, 'hypothesis'):
                         camera_class = int(res_2d.hypothesis.class_id)
                         score = float(res_2d.hypothesis.score)
@@ -279,10 +276,10 @@ class FrustumFusionNode(Node):
                         
                     det_3d.results.append(inst_hypothesis)
 
-                # Append the verified detection to the publishing queue
+                # Add the fused detection to the output message.
                 fused_detections.detections.append(det_3d)
 
-        # Publish results if any objects were successfully projected and tracked
+        # Publish only when at least one detection was fused.
         if len(fused_detections.detections) > 0:
             self.fused_pub.publish(fused_detections)
 
@@ -302,38 +299,34 @@ class FrustumFusionNode(Node):
         )
 
     def box_class_det(self, sx, sy, horizontal_footprint_area, aspect_ratio, inst_hypothesis, camera_class, score):
-        # --- 3D BOUNDING BOX VOLUME SANITY FILTERS ---
-        # Standard KITTI Volumetric Limits:
-        # Pedestrian Volume: ~0.4m x 0.4m x 1.7m = ~0.3 m³ (Rarely exceeds 1.0 m³)
-        # Car Volume: ~4.0m x 1.6m x 1.5m = ~9.6 m³ (Rarely drops below 3.5 m³)
+        # --- Geometry-based class correction ---
+        # Apply approximate KITTI object dimensions as class-consistency heuristics.
 
-        # --- ADVANCED CYCLIST VS CAR ANTI-MIXING FILTERS ---
-        # CASE A: Camera claims CAR (0), but it is physically a CYCLIST
+        # Reclassify camera predictions when the LiDAR geometry strongly disagrees.
+        # Case A: The camera predicts a car, but the footprint is too small.
         if camera_class == 0:
-            # If the cluster width is extremely narrow (< 0.85m) or the total 
-            # footprint is tiny, it physically CANNOT be a car engine box.
+            # A narrow or small footprint is unlikely to belong to a car.
             if sy < 0.85 or horizontal_footprint_area < 1.5:
-                # If it is narrow and elongated, it is a Cyclist [1]
+                # An elongated footprint is more consistent with a cyclist.
                 if aspect_ratio >= 1.5:
-                    camera_class = 2  # Override to Cyclist
+                    camera_class = 2  # Reclassify as a cyclist.
                 else:
-                    camera_class = 1  # Override to Pedestrian (square-ish footprint)
+                    camera_class = 1  # Reclassify as a pedestrian.
 
-        # CASE B: Camera claims CYCLIST (2), but it is physically a CAR
+        # Case B: The camera predicts a cyclist, but the footprint is vehicle-sized.
         elif camera_class == 2:
-            # A cyclist is never 3.5+ meters long or wider than 1.1 meters.
-            # If the horizontal footprint area is huge, it is a vehicle platform.
+            # Large dimensions or footprint area are more consistent with a car.
             if horizontal_footprint_area > 2.8 or sx > 2.8 or sy > 1.1:
-                camera_class = 0  # Override to Car
+                camera_class = 0  # Reclassify as a car.
 
-        # CASE C: Camera claims PEDESTRIAN (1), but it is a CAR or CYCLIST
+        # Case C: The camera predicts a pedestrian, but the footprint suggests a vehicle.
         elif camera_class == 1:
             if horizontal_footprint_area > 2.8 or sx > 2.8:
-                camera_class = 0  # Override to Car
+                camera_class = 0  # Reclassify as a car.
             elif sy < 0.85 and aspect_ratio >= 1.5:
-                camera_class = 2  # Override to Cyclist
+                camera_class = 2  # Reclassify as a cyclist.
 
-        # Write clean primitive string values out to the destination msg layout
+        # Store class IDs and scores in the supported message layout.
         if hasattr(inst_hypothesis, 'hypothesis'):
             inst_hypothesis.hypothesis.class_id = str(camera_class)
             inst_hypothesis.hypothesis.score = score
@@ -345,8 +338,8 @@ def main(args=None):
     rclpy.init(args=args)
     node = FrustumFusionNode()
 
-    # 3. Spin up the Multi-Threaded environment
-    executor = MultiThreadedExecutor(num_threads=2)  # Adjust thread count based on system capabilities
+    # --- Executor lifecycle ---
+    executor = MultiThreadedExecutor(num_threads=2)  # Use two threads for executor callbacks.
     executor.add_node(node)
     
     try:
@@ -356,7 +349,7 @@ def main(args=None):
     finally:
         node.destroy_node()
         
-        # FIXED: Enforce clear context protection guard for ROS 2 Jazzy
+        # Shut down the ROS context only if it is still active.
         if rclpy.ok():
             rclpy.shutdown()
 

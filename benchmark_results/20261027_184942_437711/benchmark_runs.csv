@@ -1,4 +1,4 @@
 run,status,playback_duration_s,resource_samples,system_cpu_pct_mean,pipeline_cpu_pct_of_host_mean,pipeline_cpu_cores_mean,pipeline_rss_mb_peak,system_ram_pct_mean,gpu_util_pct_mean,gpu_util_pct_peak,gpu_memory_used_mb_peak,lidar_callback_mean_ms,camera_callback_mean_ms,lidar_pre_callback_age_mean_ms,camera_pre_callback_age_mean_ms,camera_inference_mean_ms,fusion_compute_mean_ms,fusion_callback_mean_ms,bev_render_mean_ms
-1,completed,220.612,214,98.159,0.063,0.008,4247.48,23.531,6.43,11.0,1348.0,30.886,11.545,3.694,-2.994,5.171,2.348,3.16,2.889
-2,completed,220.704,214,98.871,0.064,0.008,4209.219,23.488,6.009,11.0,1489.0,31.698,11.761,2.763,-2.874,5.289,4.281,5.057,2.906
-3,completed,220.673,214,98.806,0.064,0.008,4222.328,23.506,5.047,11.0,1517.0,31.666,11.939,2.683,-2.883,5.287,2.311,3.098,2.613
+1,completed,110.871,107,99.03,0.115,0.014,4234.871,23.792,10.075,15.0,1422.0,31.451,11.368,5.031,-5.869,4.918,2.494,3.214,2.566
+2,completed,110.808,107,98.999,0.113,0.014,4223.395,23.469,9.766,14.0,1454.0,32.968,11.313,6.871,-5.758,4.892,2.688,3.457,2.849
+3,completed,110.873,107,99.275,0.117,0.014,4235.465,23.551,10.0,13.0,1435.0,31.136,11.16,6.228,-5.787,4.793,2.673,3.46,2.78

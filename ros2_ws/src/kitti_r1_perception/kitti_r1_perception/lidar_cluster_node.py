@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from rclpy.node import Node
-from rclpy.executors import SingleThreadedExecutor # ⚡ Changed to SingleThreaded for predictability
+from rclpy.executors import SingleThreadedExecutor  # Use a single-threaded executor for predictable processing.
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
@@ -24,7 +24,7 @@ class LidarClusterNode(Node):
         self.perf_log_dbscan = []
         self.perf_log_total = []
         
-        # Parameters
+        # --- Configuration ---
         self.declare_parameter('voxel_size', 0.15)  
         self.declare_parameter('ground_distance_threshold', 0.3)
         self.declare_parameter('ransac_n', 3)
@@ -53,17 +53,17 @@ class LidarClusterNode(Node):
         self.bev_min_z = self.get_parameter('bev_min_z').value
         self.bev_max_z = self.get_parameter('bev_max_z').value
 
-        # Define the real-time profile inside __init__
+        # Configure a bounded QoS profile for point-cloud processing.
         lidar_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
             depth=1
         )
 
-        # Create a Mutually Exclusive Callback Group for thread isolation
+        # Prevent concurrent execution of callbacks in this node.
         self.callback_group = MutuallyExclusiveCallbackGroup()
 
-        # Subscription
+        # --- ROS interfaces ---
         self.subscription = self.create_subscription(
             PointCloud2,
             '/kitti/velodyne/pointcloud',
@@ -71,11 +71,11 @@ class LidarClusterNode(Node):
             lidar_qos,  
             callback_group=self.callback_group) 
         
-        # Publishers
+        # Publish clustered detections and the ground-filtered point cloud.
         self.cluster_pub = self.create_publisher(Detection3DArray, '/detection/lidar_clusters', lidar_qos)
         self.no_ground_pub = self.create_publisher(PointCloud2, '/lidar/points_no_ground', lidar_qos)
         
-        # Configure GPU context (Falls back to CPU if Open3D wasn't compiled with CUDA support)
+        # Use the GPU when supported by the installed Open3D build; otherwise use the CPU.
         try:
             self.o3d_device = o3d.core.Device("CUDA:0")
             self.get_logger().info("Successfully bound Open3D to RTX 4060 GPU.")
@@ -85,31 +85,30 @@ class LidarClusterNode(Node):
 
         self.get_logger().info('Lidar Cluster Node Initialized successfully.')
 
-        # ⚡ NEW: Complete CPU+GPU pipeline warmup sequence
+        # Warm up the CPU and Open3D processing paths.
         self.warmup_gpu()
 
-        # Metrics lists for post-run distribution plotting
+        # Initialize metrics used by the post-run latency plots.
         self.ransac_latencies = []
         self.dbscan_latencies = []
         self.total_latencies = []
         self.get_logger().info('Multi-Threaded Lidar Cluster Node Initialized with RTX 4060 GPU Acceleration & Geometric Filtering.')
 
     def warmup_gpu(self):
-        """Pre-compiles CPU arrays with the exact shape matching the live sensor stream."""
+        """Warm up point-cloud processing with representative sensor data."""
         try:
-            # 1. Match typical KITTI point sizes exactly (~115,000 to 120,000 points)
+            # Use a representative KITTI point-cloud size.
             exact_sensor_shape = (115000, 3)
             dummy_pts = np.random.uniform(-10.0, 40.0, exact_sensor_shape).astype(np.float32)
             
-            # 2. Force complete structural cache tracking for the ROI filters
-            
+            # Apply the same region-of-interest filter used for live data.
             dummy_pts = dummy_pts[self.get_roi_mask(dummy_pts)]
 
-            # 3. ⚡ FIXED: Correct Open3D Tensor assignment syntax
+            # Create an Open3D point cloud on the selected device.
             pcd_gpu = o3d.t.geometry.PointCloud(device=self.o3d_device)
             pcd_gpu.point["positions"] = o3d.core.Tensor(dummy_pts, dtype=o3d.core.float32, device=self.o3d_device)
 
-            # 4. Correct Open3D Tensor API call order (distance_threshold, ransac_n, num_iterations)
+            # Run the same downsampling, ground segmentation, and clustering stages as the live pipeline.
             pcd_down = pcd_gpu.voxel_down_sample(voxel_size=self.voxel_size)
             _, inliers = pcd_down.segment_plane(
                 self.ground_dist, self.ransac_n, self.ransac_iterations
@@ -130,24 +129,22 @@ class LidarClusterNode(Node):
         )
 
     def listener_callback(self, msg):
-        # Start total callback tracking timer
+        # --- Input timing and preprocessing ---
         node_start_time = time.perf_counter()
 
-        # 1. Fetch current clock directly from the node instance
+        # Measure message age using the node's ROS clock.
         now = self.get_clock().now()
         
-        # 2. Parse the raw message stamp cleanly
         msg_stamp = rclpy.time.Time.from_msg(msg.header.stamp)
         
-        # 3. CRITICAL: Force calculation using the same integer timeline
         delta_nanoseconds = now.nanoseconds - msg_stamp.nanoseconds
         data_age_ms = delta_nanoseconds / 1e6
 
-        # --- FIX: Clamp the initial clock connection lag ---
+        # Ignore extreme values during initial clock synchronization.
         if data_age_ms < -100000.0 or data_age_ms > 100000.0:
-            data_age_ms = 0.0  # Force first frame to 0.0ms instead of showing the time warp
+            data_age_ms = 0.0  # Avoid reporting the initial clock offset as message age.
 
-        # 1. Fast Vectorized Zero-Copy Byte Conversion (CPU to NumPy)
+        # Convert the point-cloud buffer to a NumPy view.
         conversion_start = time.perf_counter()
         points = self.fast_pointcloud2_to_numpy(msg)
         conversion_time_ms = (time.perf_counter() - conversion_start) * 1000.0
@@ -155,26 +152,25 @@ class LidarClusterNode(Node):
         if points.size == 0:
             return
         
-        # 2. Vectorized ROI Box Filter (X=Forward, Y=Lateral, Z=Height)
+        # Filter points to the configured BEV region of interest.
         roi_start = time.perf_counter()
         points = points[self.get_roi_mask(points)]
         roi_time_ms = (time.perf_counter() - roi_start) * 1000.0
         if points.size == 0:
             return
         
-        # ----------------------------------------------------------------------
-        # ⚡ GPU OFFLOAD: Instantly map arrays to RTX 4060 VRAM
-        # ----------------------------------------------------------------------
+        # --- Open3D processing ---
+        # Transfer points to the selected Open3D device.
         gpu_upload_start = time.perf_counter()
         o3d_points = o3d.core.Tensor(points, dtype=o3d.core.float32, device=self.o3d_device)
         pcd_gpu = o3d.t.geometry.PointCloud(device=self.o3d_device)
         pcd_gpu.point["positions"] = o3d.core.Tensor(points, dtype=o3d.core.float32, device=self.o3d_device)
         upload_time_ms = (time.perf_counter() - gpu_upload_start) * 1000.0
 
-        # 3. GPU Voxel Downsampling
+        # Reduce point density with voxel downsampling.
         pcd_down = pcd_gpu.voxel_down_sample(voxel_size=self.voxel_size)
 
-        # 4. GPU RANSAC Ground Segmentation
+        # Segment the ground plane with RANSAC.
         if len(pcd_down.point.positions) < self.min_cluster:
             return
 
@@ -183,7 +179,7 @@ class LidarClusterNode(Node):
                                                               ransac_n=self.ransac_n,
                                                               num_iterations=self.ransac_iterations)
         
-        # Use select_by_index() to match Int64 types natively
+        # Remove ground points using the returned inlier indices.
         pcd_no_ground = pcd_down.select_by_index(inliers_indices, invert=True)
         ransac_time_ms = (time.perf_counter() - ransac_start) * 1000.0
         self.ransac_latencies.append(ransac_time_ms)
@@ -191,12 +187,12 @@ class LidarClusterNode(Node):
         if len(pcd_no_ground.point.positions) == 0:
             return
 
-        # Keeps the total unclustered matrix size bounded before hitting the heavy math stage.
+        # Bound the number of points passed to DBSCAN.
         MAX_GPU_COMPUTE_POINTS = 15000
         num_noground_points = len(pcd_no_ground.point.positions)
 
         if num_noground_points > MAX_GPU_COMPUTE_POINTS:            
-            # Create a rapid, vectorized index tensor directly inside the active CUDA execution track
+            # Select a bounded subset of points on the active Open3D device.
             indices_np = np.arange(MAX_GPU_COMPUTE_POINTS, dtype=np.int64)
             indices = o3d.core.Tensor(
                 indices_np,
@@ -210,15 +206,14 @@ class LidarClusterNode(Node):
                 f"to memory allocation ceiling {MAX_GPU_COMPUTE_POINTS} to block VRAM pool overflows."
             )
 
-        # 5. GPU Parallel DBSCAN Clustering
+        # Cluster the remaining points with DBSCAN.
         dbscan_start = time.perf_counter()
         labels_tensor = pcd_no_ground.cluster_dbscan(eps=self.cluster_tol, min_points=self.min_cluster)
         dbscan_time_ms = (time.perf_counter() - dbscan_start) * 1000.0
         self.dbscan_latencies.append(dbscan_time_ms)
         
-        # ----------------------------------------------------------------------
-        # HOST RETRIEVAL: Pull results back to CPU for ROS layout packaging
-        # ----------------------------------------------------------------------
+        # --- ROS message construction ---
+        # Copy clustering results to CPU for NumPy processing and ROS serialization.
         labels = labels_tensor.cpu().numpy()
         no_ground_pts = pcd_no_ground.point.positions.cpu().numpy()
 
@@ -226,7 +221,7 @@ class LidarClusterNode(Node):
         if max_label < 0:
             return
 
-        # 6. Parallel Vector Center/Extent Processing via Numpy
+        # Compute cluster bounds and construct detection messages.
         loop_start = time.perf_counter()
         detections = Detection3DArray()
         detections.header = msg.header
@@ -246,11 +241,9 @@ class LidarClusterNode(Node):
             center = (min_bound + max_bound) / 2.0
             extent = max_bound - min_bound
 
-            # ==================================================================
-            # ⚡ CONTEXT-AWARE: ADAPTIVE GEOMETRIC OBJECT FILTERS (Város vs Sztráda)
-            # ==================================================================
+            # --- Geometry-based cluster filtering ---
             
-            # --- FILTER 1: DISTANCE RANGE BOUNDS ---
+            # Reject clusters beyond the supported detection range.
             distance_from_car = float(np.linalg.norm(center[:2]))
             if distance_from_car > 35.0:
                 continue
@@ -259,28 +252,20 @@ class LidarClusterNode(Node):
             horizontal_area = length * width
             volume = length * width * height
 
-            # ⚡ INTELLIGENS KÖRNYEZET-DETEKTÁLÁS (NumPy alapú gyors csekk)
-            # Megnézzük a klaszter elhelyezkedését oldalirányban (Y tengely)
-            # Ha az objektum az úttest szélén van (pl. Y > 3.5 vagy Y < -3.5 méter), 
-            # és nagyon hosszú (length > 5.5), akkor ez egy városi fal/kerítés!
+            # Identify long structures near the lateral edges of the road.
             is_lateral_infrastructure = (abs(center[1]) > 3.5) and (length > 5.5)
 
-             # ==================================================================
-            # --- FILTER 2: TRAM & HEAVY VEHICLE OVERSIZE CEILING ---
-            # ==================================================================
-            # Standard European trucks/buses are ~16.5m–18.75m. 
-            # Trams and articulated light-rail units easily span 30m–45m.
-            # We expand boundaries to capture full rail units and angular turn expansions.
+            # Reject dimensions beyond the supported vehicle and infrastructure bounds.
             
             if length > 45.0 or width > 12.0 or height > 5.5:
                 continue
 
-            # --- FILTER 3: DINAMIKUS VÁROSI UTCA VS SZTRÁDA LOGIKA ---
-            if distance_from_car <= 15.0:  # Kitoljuk a közeli zónát 15 méterre
+            # Apply stricter filtering nearby and size-based filtering at longer range.
+            if distance_from_car <= 15.0:
                 if volume < 0.05 or height < 0.2:
                     continue
                 
-                # Szigorú falszűrő csak közel (városban):
+                # Reject lateral infrastructure in the nearby region.
                 if is_lateral_infrastructure:
                     continue
 
@@ -289,22 +274,18 @@ class LidarClusterNode(Node):
                     continue
                     
             else:
-                # Távoli/Közép zóna (15m - 35m) -> Ide esik a 20m-re lévő teherautó!
+                # Apply minimum dimensions in the mid- and far-range region.
                 if length < 0.4 or width < 0.4 or height < 0.4:
                     continue
                 
-                if horizontal_area < 0.20 or volume < 0.10: # Kicsit engedékenyebb határok a ritka távoli pontoknak
+                if horizontal_area < 0.20 or volume < 0.10:  # Allow smaller clusters at longer range.
                     continue
 
-                # ⚡ JAVÍTÁS: Ha az objektum 15 méternél messzebb van, a sztrádán haladó 
-                # nagy teherautókat NEM dobjuk el, még akkor sem, ha oldalt vannak (sávváltáskor)!
-                # A falszűrőt (is_lateral_infrastructure) itt teljesen figyelmen kívül hagyjuk.
-                
-                # Csak a teljesen extrém, vékony póznaszerű falakat szűrjük le távolról
+                # Reject only extremely thin, elongated structures at longer range.
                 if (length > 5.0 and width < 0.4) or (width > 5.0 and length < 0.4):
                     continue
-            # ==================================================================
 
+            # --- Detection message ---
             detection = Detection3D()
             detection.header = detections.header
 
@@ -321,42 +302,38 @@ class LidarClusterNode(Node):
             hypothesis.pose.pose.orientation.w = 1.0
             detection.results.append(hypothesis)
 
-             # ⚡ FIXED REAL BOX ASSIGNMENTS: Mapping unique 0, 1, 2 axes directly
+            # Map the cluster dimensions to the corresponding bounding-box axes.
             bbox = BoundingBox3D()
             bbox.center.position.x = float(center[0])
             bbox.center.position.y = float(center[1])
             bbox.center.position.z = float(center[2])
             bbox.center.orientation.w = 1.0
 
-            bbox.size.x = float(length) # Maps length (index 0)
-            bbox.size.y = float(width)  # Maps width  (index 1)
-            bbox.size.z = float(height) # Maps height (index 2)
+            bbox.size.x = float(length)  # Length along the x-axis.
+            bbox.size.y = float(width)   # Width along the y-axis.
+            bbox.size.z = float(height)  # Height along the z-axis.
 
             detection.bbox = bbox
             detections.detections.append(detection)
 
         msg_loop_time_ms = (time.perf_counter() - loop_start) * 1000.0
 
-        # Publish results
+        # --- Publish outputs and record metrics ---
         self.cluster_pub.publish(detections)
 
-        # Publish Debug Cloud
+        # Publish the ground-filtered point cloud for visualization.
         no_ground_msg = point_cloud2.create_cloud_xyz32(detections.header, no_ground_pts)
         self.no_ground_pub.publish(no_ground_msg)
 
         node_time_ms = (time.perf_counter() - node_start_time) * 1000.0
         num_clusters = len(detections.detections)
 
-        # ----------------------------------------------------------------------
-        # ⚡ CRITICAL OPTIMIZATION: Append metrics HERE, before any subsequent early returns
-        # ----------------------------------------------------------------------
+        # Store callback metrics for the post-run plots.
         self.perf_log_data_age.append(data_age_ms)
         self.perf_log_ransac.append(ransac_time_ms)
         self.perf_log_dbscan.append(dbscan_time_ms)
         self.perf_log_total.append(node_time_ms)
-        # ----------------------------------------------------------------------
-
-        # Log complete GPU performance metrics profile
+        # Log a breakdown of the callback processing time.
         self.get_logger().info(
             f"\n--- RTX 4060 GPU LIDAR PROFILING BREAKDOWN ---\n"
             f"Generated Clusters  : {num_clusters}\n"
@@ -371,8 +348,8 @@ class LidarClusterNode(Node):
         )
 
     def save_latency_distribution_plot(self):
-        """ Compiles a high-density diagnostic histogram with robust attribute fallback guards """
-        # Safely extract arrays using getattr to completely immunize against AttributeError
+        """Save latency histograms for the LiDAR processing stages."""
+        # Read available metric histories.
         perf_log_total = getattr(self, 'perf_log_total', [])
         perf_log_data_age = getattr(self, 'perf_log_data_age', [])
         perf_log_ransac = getattr(self, 'perf_log_ransac', [])
@@ -383,35 +360,35 @@ class LidarClusterNode(Node):
             return
 
         try:
-            # Resolve paths
+            # Resolve the package's performance log directory.
             pkg_share = get_package_share_directory('kitti_r1_perception')
             log_dir = os.path.join(pkg_share, 'perf_logs')
             os.makedirs(log_dir, exist_ok=True)
             plot_path = os.path.join(log_dir, 'lidar_latency_distribution.png')
 
-            # Create a 2x2 grid panel plot
+            # Create a 2-by-2 grid of latency histograms.
             fig, axs = plt.subplots(2, 2, figsize=(12, 10))
             fig.suptitle('RTX 4060 LiDAR Pipeline Latency Analysis', fontsize=16, fontweight='bold')
 
-            # Plot 1: Pre-Callback Transport Data Age
+            # Plot 1: message age before callback processing.
             axs[0, 0].hist(perf_log_data_age, bins=20, color='orange', alpha=0.7, edgecolor='black')
             axs[0, 0].set_title('Pre-Callback Data Age (Network Transport Delay)')
             axs[0, 0].set_xlabel('Latency (ms)')
             axs[0, 0].set_ylabel('Frame Count')
 
-            # Plot 2: GPU RANSAC Ground Segmentation Execution Cost
+            # Plot 2: RANSAC ground-segmentation latency.
             axs[0, 1].hist(perf_log_ransac, bins=20, color='cyan', alpha=0.7, edgecolor='black')
             axs[0, 1].set_title('GPU CUDA RANSAC Cost')
             axs[0, 1].set_xlabel('Latency (ms)')
             axs[0, 1].set_ylabel('Frame Count')
 
-            # Plot 3: GPU DBSCAN Clustering Execution Cost
+            # Plot 3: DBSCAN clustering latency.
             axs[1, 0].hist(perf_log_dbscan, bins=20, color='purple', alpha=0.7, edgecolor='black')
             axs[1, 0].set_title('GPU CUDA DBSCAN Clustering Cost')
             axs[1, 0].set_xlabel('Latency (ms)')
             axs[1, 0].set_ylabel('Frame Count')
 
-            # Plot 4: Total Node Callback Processing Footprint
+            # Plot 4: total node callback latency.
             axs[1, 1].hist(perf_log_total, bins=20, color='green', alpha=0.7, edgecolor='black')
             axs[1, 1].set_title('Total Node Callback Footprint')
             axs[1, 1].set_xlabel('Latency (ms)')
@@ -427,19 +404,17 @@ class LidarClusterNode(Node):
             print(f"Failed to generate performance plot: {e}")
 
     def fast_pointcloud2_to_numpy(self, msg):
-        """⚡ PURE ZERO-COPY STRUCTURE SLICING (No implicit row copying)."""
+        """Return XYZ points as a zero-copy view of the PointCloud2 data buffer."""
         if len(msg.data) == 0:
             return np.empty((0, 3), dtype=np.float32)
 
-        # 1. Cast raw bytes into an unstructured 1D uint8 array
+        # View the message payload as a 1D uint8 array.
         data_arr = np.frombuffer(msg.data, dtype=np.uint8)
         
-        # 2. Reshape into 2D rows matching the layout step
+        # Reshape the buffer into one row per point.
         reshaped = data_arr.reshape((msg.height * msg.width), msg.point_step)
         
-        # 3. Slice the first 12 contiguous bytes (X, Y, Z are sequential: 4 bytes * 3 fields)
-        # Then instantly cast them into 3D Float32 points using a reference memory view
-        # ⚡ FIXED: Returning 'points' directly maintains the zero-copy view!
+        # View the first 12 bytes of each point as three consecutive float32 XYZ values.
         points = reshaped[:, 0:12].view(dtype=np.float32).reshape(-1, 3)
           
         return points
@@ -455,11 +430,11 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        # Trigger the multi-stage performance plot on shutdown
+        # Save latency plots before shutting down the node.
         node.save_latency_distribution_plot()
         node.destroy_node()
 
-        # FIXED: Enforce clear context protection guard for ROS 2 Jazzy
+        # Shut down the ROS context only if it is still active.
         if rclpy.ok():
             rclpy.shutdown()
 

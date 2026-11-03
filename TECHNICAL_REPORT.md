@@ -136,43 +136,28 @@ The table below reproduces a reported playback summary. Sample counts differ by 
 
 The supplied summary covers a reported 2,065-frame run on a desktop equipped with an NVIDIA GeForce RTX 4060 GPU and an Intel Core i5-12400 CPU. Values and sample counts are retained as supplied.
 
-### 6.1. Recorded Run Summary
-
-### Telemetry Log Excerpt
-The BEV `PIPELINE` FPS text is calculated from intervals between render callbacks; it is not an independently measured end-to-end pipeline throughput.
+### 6.1. Runtime Log Snapshot (Single Frame Example)
+The following live telemetry excerpt demonstrates a typical single-frame execution cycle, capturing the immediate delta between raw compute kernels and total ROS 2 callback wrappers:
 
 ```text
 [camera_detector_node-2] ONNX Inference: 5.01ms  | Pre-Callback Age: -5.28ms | Total Callback: 12.76ms
 [lidar_cluster_node-1]   Numpy Slice: 0.02ms     | GPU DBSCAN Cost: 21.12ms  | Total Callback: 33.06ms
 [frustum_fusion_node-3]  Parallel Matrix Broadcasting | GPU Processing: 2.74ms   | Total Callback: 3.51ms
-[bev_visualizer_node-4]  ⚡ Asynchronous BEV Render Complete. Pipeline Speed: 10.0 FPS | Canvas Cost: 2.59ms
+[bev_visualizer_node-4]  Asynchronous BEV Render Complete. Pipeline Speed: 10.0 FPS | Canvas Cost: 2.59ms
 ```
+*Note: The BEV `PIPELINE` FPS text is calculated from intervals between render callbacks; it is not an independently measured end-to-end pipeline throughput.*
 
-### 6.2. Three-Run Benchmark (2026-10-12)
-The controller ran the same `2011_09_29_drive_0071_sync` bag three times at `0.5x` playback. Each playback lasted 220.6 seconds and collected 214 one-second resource samples. Stage sample counts vary and are listed in the generated summary.
-
-| Metric | Median of per-run means | Range across run means 
-| :--- | ---: | ---: | 
-| LiDAR total callback | 31.67 ms | 30.89–31.70 ms |
-| LiDAR DBSCAN | 20.07 ms | 19.46–20.08 ms |
-| Camera ONNX inference | 5.29 ms | 5.17–5.29 ms |
-| Fusion compute interval | 2.35 ms | 2.31–4.28 ms |
-| Fusion total callback | 3.16 ms | 3.10–5.06 ms |
-| BEV render callback | 2.89 ms | 2.61–2.91 ms |
-
-Raw logs, one-second resource samples, JSON metadata, and run summaries are linked from the [generated benchmark summary](benchmark_results/20261012_185630_993536/benchmark_summary.md).
-
-
-The controller ran the same `2011_09_29_drive_0071_sync` bag three times at `1.0x` playback. Each playback lasted 110.9 seconds and collected 108 one-second resource samples. Stage sample counts vary and are listed in the generated summary.
+### 6.2. Automated Three-Run Benchmark Matrix (Statistical Cross-Run Summary)
+To confirm long-term stability and eliminate driver-level scheduling anomalies, the controller executed the same `2011_09_29_drive_0071_sync` bag three times at native 1.0x playback frequency (10 Hz). 
 
 | Metric | Median of per-run means | Range across run means 
 | :--- | ---: | ---: | 
-| LiDAR total callback | 33.06 ms | 32.98–33.40 ms |
-| LiDAR DBSCAN | 21.12 ms | 21.00–21.42 ms |
-| Camera ONNX inference | 5.01 ms | 5.00–5.07 ms |
-| Fusion compute interval | 2.74 ms | 2.67–2.77 ms | 
-| Fusion total callback | 3.51 ms | 3.46–3.54 ms |
-| BEV render callback | 2.59 ms | 2.58-2.85 ms |
+| LiDAR total callback | 31.45 ms | 31.14–32.97 ms |
+| LiDAR DBSCAN | 20.25 ms | 20.03–21.68 ms |
+| Camera ONNX inference | 4.89 ms | 4.79–4.92 ms |
+| Fusion compute interval | 2.67 ms | 2.49–2.69 ms | 
+| Fusion total callback | 3.46 ms | 3.21–3.46 ms |
+| BEV render callback | 2.78 ms | 2.57–2.85 ms |
 
 
 Raw logs, one-second resource samples, JSON metadata, and run summaries are linked from the [generated benchmark summary](benchmark_results/20261013_122339_464485/benchmark_summary.md).

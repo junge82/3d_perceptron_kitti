@@ -1,0 +1,931 @@
+{
+  "metadata": {
+    "created_utc": "2026-10-27T17:49:42+00:00",
+    "requested_runs": 3,
+    "bag_path": "/home/gergo/work/3d_perceptron_kitti/2011_09_29_drive_0071_sync",
+    "bag_size_bytes": 5012821546,
+    "play_rate": 1.0,
+    "playback_delay_s": 8.0,
+    "sample_interval_s": 1.0,
+    "run_timeout_s": 900.0,
+    "build_performed": true,
+    "system": {
+      "hostname": "BlackJack",
+      "platform": "Linux-6.8.0-138-generic-x86_64-with-glibc2.35",
+      "python": "3.12.13",
+      "ros_distro": "jazzy",
+      "cpu_model": "12th Gen Intel(R) Core(TM) i5-12400",
+      "logical_cpu_count": 12,
+      "memory_total_bytes": 33415208960,
+      "gpu_name": "NVIDIA GeForce RTX 4060",
+      "gpu_driver": "615.71.10",
+      "gpu_memory_total_mb": 8188.0
+    },
+    "git": {
+      "commit": "5ead6e7",
+      "worktree_dirty": true
+    }
+  },
+  "runs": [
+    {
+      "run": 1,
+      "status": "completed",
+      "launch_started_utc": "2026-10-27T17:49:44+00:00",
+      "playback_started_utc": "2026-10-27T17:49:53+00:00",
+      "launch_duration_s": 120.8855843170004,
+      "playback_duration_s": 110.87073086599958,
+      "exit_code": 0,
+      "bag_exit_code": 0,
+      "command": [
+        "bash",
+        "-c",
+        "source /home/gergo/work/3d_perceptron_kitti/install/setup.bash && exec ros2 launch kitti_r1_perception myperception.launch.py bag_path:=/home/gergo/work/3d_perceptron_kitti/2011_09_29_drive_0071_sync play_rate:=1.0 playback_delay:=8.0 shutdown_on_bag_exit:=true"
+      ],
+      "pipeline_log": "benchmark_results/20261027_184942_437711/run_01/pipeline.log",
+      "resource_log": "benchmark_results/20261027_184942_437711/run_01/resource_usage.csv",
+      "resource_samples": 107,
+      "monitor_errors": [],
+      "timing": {
+        "LiDAR Pre-Callback Age": {
+          "count": 1056,
+          "mean": 5.031335227272727,
+          "median": 4.425000000000001,
+          "p95": 30.765,
+          "p99": 40.205000000000034,
+          "min": -27.07,
+          "max": 115.56
+        },
+        "Camera Pre-Callback Age": {
+          "count": 1029,
+          "mean": -5.868678328474247,
+          "median": -6.44,
+          "p95": 15.275999999999998,
+          "p99": 19.8516,
+          "min": -26.48,
+          "max": 22.73
+        },
+        "Numpy Byte Slice": {
+          "count": 1056,
+          "mean": 0.020047348484848487,
+          "median": 0.02,
+          "p95": 0.02,
+          "p99": 0.03,
+          "min": 0.01,
+          "max": 0.07
+        },
+        "NumPy ROI Filter": {
+          "count": 1056,
+          "mean": 1.5833333333333333,
+          "median": 1.51,
+          "p95": 2.0,
+          "p99": 2.959000000000001,
+          "min": 1.16,
+          "max": 6.7
+        },
+        "GPU VRAM Upload Cost": {
+          "count": 1056,
+          "mean": 0.3218087121212121,
+          "median": 0.3,
+          "p95": 0.41,
+          "p99": 0.7690000000000009,
+          "min": 0.24,
+          "max": 4.7
+        },
+        "GPU CUDA RANSAC Cost": {
+          "count": 1056,
+          "mean": 2.689431818181818,
+          "median": 1.975,
+          "p95": 6.3125,
+          "p99": 8.735500000000009,
+          "min": 1.3,
+          "max": 15.64
+        },
+        "GPU CUDA DBSCAN Cost": {
+          "count": 1056,
+          "mean": 20.253967803030303,
+          "median": 18.26,
+          "p95": 30.0375,
+          "p99": 66.72550000000015,
+          "min": 9.54,
+          "max": 136.39
+        },
+        "ROS Message Loop": {
+          "count": 1056,
+          "mean": 3.697405303030303,
+          "median": 3.43,
+          "p95": 6.952500000000001,
+          "p99": 10.261500000000012,
+          "min": 1.4,
+          "max": 15.43
+        },
+        "LiDAR Total Callback Cost": {
+          "count": 1056,
+          "mean": 31.45149621212121,
+          "median": 29.155,
+          "p95": 45.1,
+          "p99": 76.82700000000004,
+          "min": 16.63,
+          "max": 145.23
+        },
+        "Camera Total Callback Cost": {
+          "count": 1029,
+          "mean": 11.36787172011662,
+          "median": 9.76,
+          "p95": 20.803999999999988,
+          "p99": 25.974400000000003,
+          "min": 7.44,
+          "max": 41.16
+        },
+        "Pure ONNX Inference": {
+          "count": 1029,
+          "mean": 4.918075801749271,
+          "median": 4.37,
+          "p95": 7.571999999999998,
+          "p99": 11.535200000000005,
+          "min": 3.89,
+          "max": 16.66
+        },
+        "GPU Processing Time": null,
+        "Fusion Compute Interval": {
+          "count": 892,
+          "mean": 2.493811659192825,
+          "median": 1.67,
+          "p95": 5.183499999999998,
+          "p99": 9.41430000000001,
+          "min": 1.35,
+          "max": 209.87
+        },
+        "Fusion Total Callback": {
+          "count": 892,
+          "mean": 3.2144730941704034,
+          "median": 2.31,
+          "p95": 6.272499999999996,
+          "p99": 10.719300000000025,
+          "min": 1.64,
+          "max": 210.67
+        },
+        "Fusion Timestamp Difference": {
+          "count": 892,
+          "mean": 1.1572085201793723,
+          "median": 1.15,
+          "p95": 1.57,
+          "p99": 1.6,
+          "min": 0.42,
+          "max": 2.6
+        },
+        "BEV Pure Render Cost": {
+          "count": 53,
+          "mean": 1.6832075471698111,
+          "median": 1.58,
+          "p95": 2.7659999999999982,
+          "p99": 4.324399999999997,
+          "min": 0.76,
+          "max": 4.86
+        },
+        "BEV Total Callback Cost": {
+          "count": 53,
+          "mean": 2.566415094339623,
+          "median": 2.18,
+          "p95": 4.893999999999999,
+          "p99": 5.550799999999999,
+          "min": 1.29,
+          "max": 5.79
+        }
+      },
+      "resources": {
+        "system_cpu_pct": {
+          "count": 107,
+          "mean": 99.02990654205608,
+          "median": 100.0,
+          "p95": 100.0,
+          "p99": 100.0,
+          "min": 7.7,
+          "max": 100.0
+        },
+        "pipeline_cpu_pct_of_host": {
+          "count": 107,
+          "mean": 0.1146417445482866,
+          "median": 0.08333333333333333,
+          "p95": 0.16666666666666666,
+          "p99": 0.24166666666666667,
+          "min": 0.0,
+          "max": 0.24166666666666667
+        },
+        "pipeline_cpu_cores": {
+          "count": 107,
+          "mean": 0.013757009345794392,
+          "median": 0.01,
+          "p95": 0.02,
+          "p99": 0.028999999999999998,
+          "min": 0.0,
+          "max": 0.028999999999999998
+        },
+        "pipeline_rss_mb": {
+          "count": 107,
+          "mean": 4200.6242333528035,
+          "median": 4218.38671875,
+          "p95": 4231.38125,
+          "p99": 4234.355078125,
+          "min": 2764.9375,
+          "max": 4234.87109375
+        },
+        "system_ram_pct": {
+          "count": 107,
+          "mean": 23.791588785046727,
+          "median": 23.8,
+          "p95": 24.0,
+          "p99": 24.0,
+          "min": 20.2,
+          "max": 24.1
+        },
+        "gpu_util_pct": {
+          "count": 107,
+          "mean": 10.074766355140186,
+          "median": 10.0,
+          "p95": 12.0,
+          "p99": 14.0,
+          "min": 3.0,
+          "max": 15.0
+        },
+        "gpu_memory_util_pct": {
+          "count": 107,
+          "mean": 1.9626168224299065,
+          "median": 2.0,
+          "p95": 2.0,
+          "p99": 2.9399999999999977,
+          "min": 1.0,
+          "max": 3.0
+        },
+        "gpu_memory_used_mb": {
+          "count": 107,
+          "mean": 1399.0280373831777,
+          "median": 1422.0,
+          "p95": 1422.0,
+          "p99": 1422.0,
+          "min": 843.0,
+          "max": 1422.0
+        },
+        "gpu_memory_total_mb": {
+          "count": 107,
+          "mean": 8188.0,
+          "median": 8188.0,
+          "p95": 8188.0,
+          "p99": 8188.0,
+          "min": 8188.0,
+          "max": 8188.0
+        },
+        "gpu_power_w": null
+      },
+      "interrupted": false
+    },
+    {
+      "run": 2,
+      "status": "completed",
+      "launch_started_utc": "2026-10-27T17:51:45+00:00",
+      "playback_started_utc": "2026-10-27T17:51:54+00:00",
+      "launch_duration_s": 120.82079286099906,
+      "playback_duration_s": 110.80800283999997,
+      "exit_code": 0,
+      "bag_exit_code": 0,
+      "command": [
+        "bash",
+        "-c",
+        "source /home/gergo/work/3d_perceptron_kitti/install/setup.bash && exec ros2 launch kitti_r1_perception myperception.launch.py bag_path:=/home/gergo/work/3d_perceptron_kitti/2011_09_29_drive_0071_sync play_rate:=1.0 playback_delay:=8.0 shutdown_on_bag_exit:=true"
+      ],
+      "pipeline_log": "benchmark_results/20261027_184942_437711/run_02/pipeline.log",
+      "resource_log": "benchmark_results/20261027_184942_437711/run_02/resource_usage.csv",
+      "resource_samples": 107,
+      "monitor_errors": [],
+      "timing": {
+        "LiDAR Pre-Callback Age": {
+          "count": 1026,
+          "mean": 6.87120857699805,
+          "median": 7.16,
+          "p95": 31.185000000000002,
+          "p99": 41.095,
+          "min": -24.91,
+          "max": 81.59
+        },
+        "Camera Pre-Callback Age": {
+          "count": 1026,
+          "mean": -5.758206627680312,
+          "median": -6.905,
+          "p95": 17.5075,
+          "p99": 20.92,
+          "min": -24.94,
+          "max": 33.21
+        },
+        "Numpy Byte Slice": {
+          "count": 1026,
+          "mean": 0.02334307992202729,
+          "median": 0.02,
+          "p95": 0.02,
+          "p99": 0.03,
+          "min": 0.01,
+          "max": 3.39
+        },
+        "NumPy ROI Filter": {
+          "count": 1026,
+          "mean": 1.6184502923976607,
+          "median": 1.51,
+          "p95": 2.1,
+          "p99": 3.84,
+          "min": 1.29,
+          "max": 6.6
+        },
+        "GPU VRAM Upload Cost": {
+          "count": 1026,
+          "mean": 0.33270955165692007,
+          "median": 0.29,
+          "p95": 0.44,
+          "p99": 0.875,
+          "min": 0.24,
+          "max": 4.5
+        },
+        "GPU CUDA RANSAC Cost": {
+          "count": 1026,
+          "mean": 2.4912768031189088,
+          "median": 1.93,
+          "p95": 5.2875,
+          "p99": 7.925000000000001,
+          "min": 1.24,
+          "max": 13.27
+        },
+        "GPU CUDA DBSCAN Cost": {
+          "count": 1026,
+          "mean": 21.67856725146199,
+          "median": 18.89,
+          "p95": 32.5175,
+          "p99": 97.67750000000001,
+          "min": 9.9,
+          "max": 169.16
+        },
+        "ROS Message Loop": {
+          "count": 1026,
+          "mean": 3.744649122807018,
+          "median": 3.5149999999999997,
+          "p95": 6.487500000000001,
+          "p99": 9.54,
+          "min": 1.46,
+          "max": 18.21
+        },
+        "LiDAR Total Callback Cost": {
+          "count": 1026,
+          "mean": 32.968372319688115,
+          "median": 30.07,
+          "p95": 46.612500000000004,
+          "p99": 112.9425,
+          "min": 16.47,
+          "max": 179.54
+        },
+        "Camera Total Callback Cost": {
+          "count": 1026,
+          "mean": 11.312797270955166,
+          "median": 9.84,
+          "p95": 19.8175,
+          "p99": 24.605,
+          "min": 7.4,
+          "max": 39.11
+        },
+        "Pure ONNX Inference": {
+          "count": 1026,
+          "mean": 4.891559454191033,
+          "median": 4.38,
+          "p95": 7.5275,
+          "p99": 10.8475,
+          "min": 3.89,
+          "max": 15.66
+        },
+        "GPU Processing Time": null,
+        "Fusion Compute Interval": {
+          "count": 893,
+          "mean": 2.6880627099664056,
+          "median": 1.63,
+          "p95": 5.53,
+          "p99": 15.642400000000247,
+          "min": 1.3,
+          "max": 199.78
+        },
+        "Fusion Total Callback": {
+          "count": 893,
+          "mean": 3.4572340425531913,
+          "median": 2.31,
+          "p95": 6.339999999999999,
+          "p99": 16.106000000000254,
+          "min": 1.62,
+          "max": 200.55
+        },
+        "Fusion Timestamp Difference": {
+          "count": 893,
+          "mean": 1.148868980963046,
+          "median": 1.11,
+          "p95": 1.57,
+          "p99": 1.6,
+          "min": 0.42,
+          "max": 2.6
+        },
+        "BEV Pure Render Cost": {
+          "count": 53,
+          "mean": 1.720943396226415,
+          "median": 1.61,
+          "p95": 2.551999999999999,
+          "p99": 4.712399999999991,
+          "min": 0.93,
+          "max": 6.21
+        },
+        "BEV Total Callback Cost": {
+          "count": 53,
+          "mean": 2.8494339622641514,
+          "median": 2.2,
+          "p95": 5.2299999999999995,
+          "p99": 10.740399999999994,
+          "min": 1.36,
+          "max": 11.9
+        }
+      },
+      "resources": {
+        "system_cpu_pct": {
+          "count": 107,
+          "mean": 98.99906542056074,
+          "median": 100.0,
+          "p95": 100.0,
+          "p99": 100.0,
+          "min": 34.7,
+          "max": 100.0
+        },
+        "pipeline_cpu_pct_of_host": {
+          "count": 107,
+          "mean": 0.1133177570093458,
+          "median": 0.08333333333333333,
+          "p95": 0.16666666666666666,
+          "p99": 0.24166666666666667,
+          "min": 0.0,
+          "max": 0.24166666666666667
+        },
+        "pipeline_cpu_cores": {
+          "count": 107,
+          "mean": 0.013598130841121495,
+          "median": 0.01,
+          "p95": 0.02,
+          "p99": 0.028999999999999998,
+          "min": 0.0,
+          "max": 0.028999999999999998
+        },
+        "pipeline_rss_mb": {
+          "count": 107,
+          "mean": 4172.853387850468,
+          "median": 4180.8515625,
+          "p95": 4205.230859375,
+          "p99": 4220.201171875,
+          "min": 3227.16796875,
+          "max": 4223.39453125
+        },
+        "system_ram_pct": {
+          "count": 107,
+          "mean": 23.469158878504672,
+          "median": 23.5,
+          "p95": 23.6,
+          "p99": 23.6,
+          "min": 20.7,
+          "max": 23.7
+        },
+        "gpu_util_pct": {
+          "count": 107,
+          "mean": 9.766355140186915,
+          "median": 10.0,
+          "p95": 12.0,
+          "p99": 13.939999999999998,
+          "min": 3.0,
+          "max": 14.0
+        },
+        "gpu_memory_util_pct": {
+          "count": 107,
+          "mean": 1.9065420560747663,
+          "median": 2.0,
+          "p95": 2.0,
+          "p99": 2.0,
+          "min": 1.0,
+          "max": 3.0
+        },
+        "gpu_memory_used_mb": {
+          "count": 107,
+          "mean": 1408.5233644859813,
+          "median": 1422.0,
+          "p95": 1454.0,
+          "p99": 1454.0,
+          "min": 997.0,
+          "max": 1454.0
+        },
+        "gpu_memory_total_mb": {
+          "count": 107,
+          "mean": 8188.0,
+          "median": 8188.0,
+          "p95": 8188.0,
+          "p99": 8188.0,
+          "min": 8188.0,
+          "max": 8188.0
+        },
+        "gpu_power_w": null
+      },
+      "interrupted": false
+    },
+    {
+      "run": 3,
+      "status": "completed",
+      "launch_started_utc": "2026-10-27T17:53:46+00:00",
+      "playback_started_utc": "2026-10-27T17:53:55+00:00",
+      "launch_duration_s": 121.08611200500127,
+      "playback_duration_s": 110.87308902500081,
+      "exit_code": 0,
+      "bag_exit_code": 0,
+      "command": [
+        "bash",
+        "-c",
+        "source /home/gergo/work/3d_perceptron_kitti/install/setup.bash && exec ros2 launch kitti_r1_perception myperception.launch.py bag_path:=/home/gergo/work/3d_perceptron_kitti/2011_09_29_drive_0071_sync play_rate:=1.0 playback_delay:=8.0 shutdown_on_bag_exit:=true"
+      ],
+      "pipeline_log": "benchmark_results/20261027_184942_437711/run_03/pipeline.log",
+      "resource_log": "benchmark_results/20261027_184942_437711/run_03/resource_usage.csv",
+      "resource_samples": 107,
+      "monitor_errors": [],
+      "timing": {
+        "LiDAR Pre-Callback Age": {
+          "count": 1037,
+          "mean": 6.22784956605593,
+          "median": 7.0,
+          "p95": 30.257999999999996,
+          "p99": 39.75400000000004,
+          "min": -24.91,
+          "max": 74.48
+        },
+        "Camera Pre-Callback Age": {
+          "count": 1033,
+          "mean": -5.787357212003872,
+          "median": -7.16,
+          "p95": 17.386,
+          "p99": 20.8036,
+          "min": -27.37,
+          "max": 199.6
+        },
+        "Numpy Byte Slice": {
+          "count": 1037,
+          "mean": 0.019459980713596912,
+          "median": 0.02,
+          "p95": 0.02,
+          "p99": 0.03,
+          "min": 0.01,
+          "max": 0.09
+        },
+        "NumPy ROI Filter": {
+          "count": 1037,
+          "mean": 1.6075602700096432,
+          "median": 1.51,
+          "p95": 2.0419999999999994,
+          "p99": 3.745200000000018,
+          "min": 1.16,
+          "max": 6.6
+        },
+        "GPU VRAM Upload Cost": {
+          "count": 1037,
+          "mean": 0.3160173577627773,
+          "median": 0.28,
+          "p95": 0.41,
+          "p99": 0.824800000000007,
+          "min": 0.24,
+          "max": 6.61
+        },
+        "GPU CUDA RANSAC Cost": {
+          "count": 1037,
+          "mean": 2.621446480231437,
+          "median": 1.98,
+          "p95": 5.985999999999998,
+          "p99": 7.484800000000007,
+          "min": 1.13,
+          "max": 11.72
+        },
+        "GPU CUDA DBSCAN Cost": {
+          "count": 1037,
+          "mean": 20.026007714561235,
+          "median": 18.19,
+          "p95": 29.451999999999988,
+          "p99": 48.20800000000062,
+          "min": 9.49,
+          "max": 136.55
+        },
+        "ROS Message Loop": {
+          "count": 1037,
+          "mean": 3.6028736740597878,
+          "median": 3.47,
+          "p95": 6.455999999999998,
+          "p99": 8.123200000000013,
+          "min": 1.23,
+          "max": 22.68
+        },
+        "LiDAR Total Callback Cost": {
+          "count": 1037,
+          "mean": 31.13613307618129,
+          "median": 29.43,
+          "p95": 43.66199999999999,
+          "p99": 58.958800000000544,
+          "min": 16.02,
+          "max": 146.97
+        },
+        "Camera Total Callback Cost": {
+          "count": 1033,
+          "mean": 11.160445304937076,
+          "median": 9.67,
+          "p95": 18.842,
+          "p99": 25.46879999999998,
+          "min": 7.09,
+          "max": 39.41
+        },
+        "Pure ONNX Inference": {
+          "count": 1033,
+          "mean": 4.7931074540174246,
+          "median": 4.27,
+          "p95": 7.37,
+          "p99": 9.4968,
+          "min": 3.89,
+          "max": 11.86
+        },
+        "GPU Processing Time": null,
+        "Fusion Compute Interval": {
+          "count": 912,
+          "mean": 2.672938596491228,
+          "median": 1.67,
+          "p95": 5.003499999999998,
+          "p99": 10.667599999999988,
+          "min": 1.38,
+          "max": 207.62
+        },
+        "Fusion Total Callback": {
+          "count": 912,
+          "mean": 3.4600548245614036,
+          "median": 2.37,
+          "p95": 6.118999999999999,
+          "p99": 11.332099999999988,
+          "min": 1.67,
+          "max": 208.57
+        },
+        "Fusion Timestamp Difference": {
+          "count": 912,
+          "mean": 1.1559868421052633,
+          "median": 1.13,
+          "p95": 1.57,
+          "p99": 1.6,
+          "min": 0.42,
+          "max": 2.6
+        },
+        "BEV Pure Render Cost": {
+          "count": 54,
+          "mean": 1.760185185185185,
+          "median": 1.64,
+          "p95": 3.038499999999993,
+          "p99": 4.990899999999999,
+          "min": 0.81,
+          "max": 5.24
+        },
+        "BEV Total Callback Cost": {
+          "count": 54,
+          "mean": 2.78037037037037,
+          "median": 2.28,
+          "p95": 5.600499999999999,
+          "p99": 5.8828,
+          "min": 1.27,
+          "max": 6.01
+        }
+      },
+      "resources": {
+        "system_cpu_pct": {
+          "count": 107,
+          "mean": 99.27476635514019,
+          "median": 100.0,
+          "p95": 100.0,
+          "p99": 100.0,
+          "min": 39.5,
+          "max": 100.0
+        },
+        "pipeline_cpu_pct_of_host": {
+          "count": 107,
+          "mean": 0.11744548286604362,
+          "median": 0.08333333333333333,
+          "p95": 0.16666666666666666,
+          "p99": 0.24166666666666667,
+          "min": 0.0,
+          "max": 0.24166666666666667
+        },
+        "pipeline_cpu_cores": {
+          "count": 107,
+          "mean": 0.014093457943925233,
+          "median": 0.01,
+          "p95": 0.02,
+          "p99": 0.028999999999999998,
+          "min": 0.0,
+          "max": 0.028999999999999998
+        },
+        "pipeline_rss_mb": {
+          "count": 107,
+          "mean": 4199.923335280374,
+          "median": 4212.76953125,
+          "p95": 4223.472265625,
+          "p99": 4225.62984375,
+          "min": 3244.53125,
+          "max": 4235.46484375
+        },
+        "system_ram_pct": {
+          "count": 107,
+          "mean": 23.55140186915888,
+          "median": 23.6,
+          "p95": 23.7,
+          "p99": 23.7,
+          "min": 20.7,
+          "max": 23.8
+        },
+        "gpu_util_pct": {
+          "count": 107,
+          "mean": 10.0,
+          "median": 10.0,
+          "p95": 13.0,
+          "p99": 13.0,
+          "min": 3.0,
+          "max": 13.0
+        },
+        "gpu_memory_util_pct": {
+          "count": 107,
+          "mean": 1.9532710280373833,
+          "median": 2.0,
+          "p95": 2.0,
+          "p99": 2.9399999999999977,
+          "min": 1.0,
+          "max": 3.0
+        },
+        "gpu_memory_used_mb": {
+          "count": 107,
+          "mean": 1389.4953271028037,
+          "median": 1403.0,
+          "p95": 1435.0,
+          "p99": 1435.0,
+          "min": 996.0,
+          "max": 1435.0
+        },
+        "gpu_memory_total_mb": {
+          "count": 107,
+          "mean": 8188.0,
+          "median": 8188.0,
+          "p95": 8188.0,
+          "p99": 8188.0,
+          "min": 8188.0,
+          "max": 8188.0
+        },
+        "gpu_power_w": null
+      },
+      "interrupted": false
+    }
+  ],
+  "median_of_run_means": {
+    "LiDAR Pre-Callback Age": {
+      "count": 3,
+      "mean": 6.0434644567755695,
+      "median": 6.22784956605593,
+      "p95": 6.806872675903838,
+      "p99": 6.858341396779208,
+      "min": 5.031335227272727,
+      "max": 6.87120857699805
+    },
+    "Camera Pre-Callback Age": {
+      "count": 3,
+      "mean": -5.804747389386144,
+      "median": -5.787357212003872,
+      "p95": -5.761121686112668,
+      "p99": -5.758789639366783,
+      "min": -5.868678328474247,
+      "max": -5.758206627680312
+    },
+    "Numpy Byte Slice": {
+      "count": 3,
+      "mean": 0.020950136373490896,
+      "median": 0.020047348484848487,
+      "p95": 0.02301350677830941,
+      "p99": 0.023277165293283716,
+      "min": 0.019459980713596912,
+      "max": 0.02334307992202729
+    },
+    "NumPy ROI Filter": {
+      "count": 3,
+      "mean": 1.6031146319135459,
+      "median": 1.6075602700096432,
+      "p95": 1.617361290158859,
+      "p99": 1.6182324919499003,
+      "min": 1.5833333333333333,
+      "max": 1.6184502923976607
+    },
+    "GPU VRAM Upload Cost": {
+      "count": 3,
+      "mean": 0.32351187384696983,
+      "median": 0.3218087121212121,
+      "p95": 0.33161946770334927,
+      "p99": 0.3324915348662059,
+      "min": 0.3160173577627773,
+      "max": 0.33270955165692007
+    },
+    "GPU CUDA RANSAC Cost": {
+      "count": 3,
+      "mean": 2.600718367177388,
+      "median": 2.621446480231437,
+      "p95": 2.68263328438678,
+      "p99": 2.6880721114228106,
+      "min": 2.4912768031189088,
+      "max": 2.689431818181818
+    },
+    "GPU CUDA DBSCAN Cost": {
+      "count": 3,
+      "mean": 20.65284758968451,
+      "median": 20.253967803030303,
+      "p95": 21.53610730661882,
+      "p99": 21.650075262493356,
+      "min": 20.026007714561235,
+      "max": 21.67856725146199
+    },
+    "ROS Message Loop": {
+      "count": 3,
+      "mean": 3.681642699965703,
+      "median": 3.697405303030303,
+      "p95": 3.739924740829346,
+      "p99": 3.7437042464114834,
+      "min": 3.6028736740597878,
+      "max": 3.744649122807018
+    },
+    "LiDAR Total Callback Cost": {
+      "count": 3,
+      "mean": 31.852000535996876,
+      "median": 31.45149621212121,
+      "p95": 32.816684708931426,
+      "p99": 32.93803479753678,
+      "min": 31.13613307618129,
+      "max": 32.968372319688115
+    },
+    "Camera Total Callback Cost": {
+      "count": 3,
+      "mean": 11.280371432002953,
+      "median": 11.312797270955166,
+      "p95": 11.362364275200473,
+      "p99": 11.36677023113339,
+      "min": 11.160445304937076,
+      "max": 11.36787172011662
+    },
+    "Pure ONNX Inference": {
+      "count": 3,
+      "mean": 4.867580903319243,
+      "median": 4.891559454191033,
+      "p95": 4.915424166993447,
+      "p99": 4.917545474798106,
+      "min": 4.7931074540174246,
+      "max": 4.918075801749271
+    },
+    "GPU Processing Time": null,
+    "Fusion Compute Interval": {
+      "count": 3,
+      "mean": 2.6182709885501527,
+      "median": 2.672938596491228,
+      "p95": 2.686550298618888,
+      "p99": 2.687760227696902,
+      "min": 2.493811659192825,
+      "max": 2.6880627099664056
+    },
+    "Fusion Total Callback": {
+      "count": 3,
+      "mean": 3.377253987094999,
+      "median": 3.4572340425531913,
+      "p95": 3.4597727463605823,
+      "p99": 3.459998408921239,
+      "min": 3.2144730941704034,
+      "max": 3.4600548245614036
+    },
+    "Fusion Timestamp Difference": {
+      "count": 3,
+      "mean": 1.1540214477492272,
+      "median": 1.1559868421052633,
+      "p95": 1.1570863523719614,
+      "p99": 1.1571840866178902,
+      "min": 1.148868980963046,
+      "max": 1.1572085201793723
+    },
+    "BEV Pure Render Cost": {
+      "count": 3,
+      "mean": 1.7214453761938036,
+      "median": 1.720943396226415,
+      "p95": 1.756261006289308,
+      "p99": 1.7594003494060098,
+      "min": 1.6832075471698111,
+      "max": 1.760185185185185
+    },
+    "BEV Total Callback Cost": {
+      "count": 3,
+      "mean": 2.732073142324715,
+      "median": 2.78037037037037,
+      "p95": 2.8425276030747733,
+      "p99": 2.8480526904262757,
+      "min": 2.566415094339623,
+      "max": 2.8494339622641514
+    }
+  }
+}

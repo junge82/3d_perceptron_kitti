@@ -28,7 +28,6 @@ PATTERNS = {
     "Fusion Compute Interval": re.compile(r"Compute interval\s*:\s*([0-9.]+)\s*ms"),
     "Fusion Total Callback": re.compile(r"Total callback\s*:\s*([0-9.]+)\s*ms"),
     "Fusion Timestamp Difference": re.compile(r"Timestamp difference\s*:\s*([0-9.]+)\s*ms"),
-    # JAVÍTVA: Az új, moduláris BEV logolási struktúrához igazított kétcsatornás minták
     "BEV Pure Render Cost": re.compile(r"Asynchronous BEV Render Complete\. Render\s*:\s*([0-9.]+)ms"),
     "BEV Total Callback Cost": re.compile(r"Total Pipeline Callback\s*:\s*([0-9.]+)ms"),
 }
@@ -44,7 +43,7 @@ def parse_log(log_path: Path):
                 match = pattern.search(line)
                 if match:
                     metrics[name].append(float(match.group(1)))
-                    # ⚡ JAVÍTVA: Kivettük a break-et! Így ha egy sor illeszkedik a generikus 
+                    # JAVÍTVA: Kivettük a break-et! Így ha egy sor illeszkedik a generikus 
                     # és a specifikus (nódus-névvel ellátott) mintára is, mindkét helyre bekerül az adat.
 
     return metrics

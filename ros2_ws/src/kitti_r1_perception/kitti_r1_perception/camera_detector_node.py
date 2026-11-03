@@ -27,7 +27,8 @@ class CameraDetectorNode(Node):
     def __init__(self):
         super().__init__('camera_detector_node')
         
-        # ⚡ FORCE SIMULATION TIME
+        # --- Simulation time ---
+        # Use the ROS simulation clock for timestamp-based measurements.
         self.set_parameters([
             rclpy.parameter.Parameter('use_sim_time', rclpy.parameter.Parameter.Type.BOOL, True)
         ])
@@ -35,11 +36,11 @@ class CameraDetectorNode(Node):
         sys.stdout.reconfigure(line_buffering=True)
         self.callback_group = MutuallyExclusiveCallbackGroup()
         self.bridge = CvBridge()
-        # Initialize metrics before any initialization path can return early.
+        # Initialize metrics before model setup can return early.
         self.inference_latencies = []
         self.total_latencies = []
         
-        # Parameters
+        # --- Detection parameters ---
         self.declare_parameter('model_version', 'yolov8n') 
         self.declare_parameter('conf_threshold', 0.25)
         self.declare_parameter('iou_threshold', 0.45)
@@ -47,7 +48,7 @@ class CameraDetectorNode(Node):
         self.conf_threshold = self.get_parameter('conf_threshold').value
         self.iou_threshold = self.get_parameter('iou_threshold').value
         
-        # Single-shot warmup configuration timer
+        # Defer model setup until after node construction.
         self.init_timer = self.create_timer(0.1, self.async_model_init)
 
     def _warmup_onnx(self):
@@ -71,7 +72,8 @@ class CameraDetectorNode(Node):
     def async_model_init(self):
         self.init_timer.cancel()
         
-        # Resolve package directories safely
+        # --- Model setup ---
+        # Resolve the installed package paths.
         self.package_share_dir = get_package_share_directory('kitti_r1_perception')
         self.torch_home_dir = os.path.join(self.package_share_dir, 'torch_home')
         os.environ['TORCH_HOME'] = self.torch_home_dir
@@ -83,11 +85,11 @@ class CameraDetectorNode(Node):
             self.get_logger().error(f"ONNX Model missing! Expected at: {model_path}. Please export it first.")
             return
 
-        # Add these environment variables BEFORE creating your InferenceSession
-        os.environ["OMP_NUM_THREADS"] = "2"       # Cap CPU helper threads
-        os.environ["OMP_WAIT_POLICY"] = "PASSIVE" # Forces threads to yield CPU when waiting
+        # Configure CPU helper threads before creating the inference session.
+        os.environ["OMP_NUM_THREADS"] = "2"       # Limit the number of helper threads.
+        os.environ["OMP_WAIT_POLICY"] = "PASSIVE" # Let idle threads yield the CPU.
 
-        # ⚡ INITIALIZE HIGH-SPEED ONNX CUDA ENGINE
+        # --- ONNX Runtime session ---
         opts = ort.SessionOptions()
         
         providers = [
@@ -103,18 +105,18 @@ class CameraDetectorNode(Node):
         self._warmup_onnx()
         self.get_logger().info(f"ONNX Runtime successfully bound execution targets: {self.session.get_providers()}")
         
-        # Hardcoded class color tracking arrays for instant layout lookups
+        # Use deterministic class colors for annotated detections.
         np.random.seed(42)
         self.colors = np.random.randint(0, 255, size=(80, 3), dtype=np.uint8)
 
-        # Build Standard Real-time QoS Constraints
+        # Keep only the latest image to limit processing backlog.
         realtime_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE, 
             history=HistoryPolicy.KEEP_LAST,
             depth=1
         )
 
-        # Define ROS infrastructure endpoints
+        # --- ROS interfaces ---
         self.subscription = self.create_subscription(
             Image, '/kitti/camera_left/image_raw', self.listener_callback, realtime_qos, callback_group=self.callback_group
         )
@@ -123,8 +125,8 @@ class CameraDetectorNode(Node):
         self.get_logger().info('ONNX Multi-Shape Perception Pipeline Activated Successfully.')
 
     def multiclass_nms(self, boxes, scores):
-        """Ultra-fast NMS utilizing direct tuple/slicing passes rather than heavy .tolist() conversions."""
-        # OpenCV NMS accepts native numpy floats much faster if wrapped precisely
+        """Apply OpenCV non-maximum suppression to the candidate boxes."""
+        # Pass NumPy arrays directly to avoid converting them to Python lists.
         indices = cv2.dnn.NMSBoxes(
             boxes, 
             scores, 
@@ -138,32 +140,31 @@ class CameraDetectorNode(Node):
     def listener_callback(self, msg):
         node_start_time = time.perf_counter()
         
-        # Calculate Simulation Clock Pre-Callback Age
+        # --- Input timing and preprocessing ---
+        # Measure the image age using the simulation clock.
         now = self.get_clock().now()
         msg_time = rclpy.time.Time.from_msg(msg.header.stamp)
         data_age_ms = (now - msg_time).nanoseconds / 1e6
         
-        # Parse image from message payload
+        # Convert the ROS image message to an OpenCV image.
         cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         cv_image_resized = cv2.resize(cv_image, (1248, 384), interpolation=cv2.INTER_LINEAR)
 
         h_orig, w_orig, _ = cv_image_resized.shape
-        # Prepare a contiguous CPU tensor for the CPU-to-GPU I/O binding transfer.
-        # Convert image matrix layout tracking configurations to match ONNX constraints
+        # Resize and convert the image to the model's expected color and layout.
         img_rgb = cv2.cvtColor(cv_image_resized, cv2.COLOR_BGR2RGB)
-        # Convert HWC image data to the model's NCHW input layout.
-        img_chw = img_rgb.transpose((2, 0, 1)) # HWC to CHW
+        img_chw = img_rgb.transpose((2, 0, 1))  # Convert HWC to CHW layout.
         img_norm = np.ascontiguousarray(img_chw, dtype=np.float32) / 255.0
         img_tensor = np.ascontiguousarray(np.expand_dims(img_norm, axis=0), dtype=np.float32)
 
-        # Execute ONNX forward execution map
+        # --- ONNX inference ---
         inference_start = time.perf_counter()
         io_binding = self.session.io_binding()
 
-        # ORT copies this CPU NumPy array to the CUDA provider.
+        # Bind the CPU input for transfer to the CUDA execution provider.
         io_binding.bind_cpu_input(self.input_name, img_tensor)
 
-        # Keep model output on CUDA during execution.
+        # Keep the model output on CUDA during inference.
         io_binding.bind_output(
             self.output_name,
             device_type='cuda',
@@ -172,14 +173,14 @@ class CameraDetectorNode(Node):
 
         self.session.run_with_iobinding(io_binding)
 
-        # Your existing NumPy decoder requires CPU output.
+        # Copy the output to CPU for NumPy-based decoding.
         outputs = io_binding.copy_outputs_to_cpu()
         inference_time_ms = (time.perf_counter() - inference_start) * 1000.0
 
-        # Decode YOLO raw structural matrices [1, 84, Anchors]
-        predictions = np.squeeze(outputs[0]).T # Reshapes matrix to [Anchors, 84]
+        # Convert YOLO output from [1, 84, anchors] to [anchors, 84].
+        predictions = np.squeeze(outputs[0]).T
         
-        # Filter baseline row indices passing minimum score threshold targets
+        # Keep predictions whose highest class score exceeds the threshold.
         scores_matrix = predictions[:, 4:]
         max_scores = np.max(scores_matrix, axis=1)
         valid_mask = max_scores > self.conf_threshold
@@ -191,14 +192,13 @@ class CameraDetectorNode(Node):
         annotated_frame = cv_image_resized.copy()
 
         if len(filtered_preds) > 0:
-            # Step 1: Decode predictions box formats
-            # Raw boxes output format is [center_x, center_y, width, height] relative to the input image size
+            # --- Decode and filter detections ---
+            # Convert center-based boxes to the top-left format used by OpenCV.
             cx = filtered_preds[:, 0]
             cy = filtered_preds[:, 1]
             w  = filtered_preds[:, 2]
             h  = filtered_preds[:, 3]
             
-            # Recompute target tracking points to fulfill OpenCV top-left bounding box formats
             x1 = cx - (w / 2)
             y1 = cy - (h / 2)
             
@@ -206,19 +206,19 @@ class CameraDetectorNode(Node):
             score_array = np.max(filtered_preds[:, 4:], axis=1)
             class_array = np.argmax(filtered_preds[:, 4:], axis=1)
             
-            # Step 2: Filter overlapped predictions via Vectorized NMS Engine
+            # Suppress overlapping boxes.
             keep_indices = self.multiclass_nms(box_array, score_array)
             
-            # Step 3: Populate arrays and draw boxes simultaneously
+            # Create ROS detections and annotate the image.
             for idx in keep_indices:
                 box = box_array[idx]
                 score = float(score_array[idx])
                 cls_id = int(class_array[idx])
                 
-                # Extract absolute bounding box dimensions
+                # Extract the bounding box coordinates and dimensions.
                 bx, by, bw, bh = float(box[0]), float(box[1]), float(box[2]), float(box[3])
                 
-                # 1. Populate standard ROS target array matrices
+                # Populate the ROS 2 detection message.
                 detection = Detection2D()
                 detection.header = msg.header
                 detection.bbox.center.position.x = bx + (bw / 2.0)
@@ -232,23 +232,24 @@ class CameraDetectorNode(Node):
                 detection.results.append(hypothesis)
                 detections.detections.append(detection)
                 
-                # 2. ⚡ LIGHT-SPEED VISUALIZATION: Vector draw directly onto baseline array
+                # Select a deterministic color for this class.
                 color = [int(c) for c in self.colors[cls_id % 80]]
                 p1 = (int(bx), int(by))
                 p2 = (int(bx + bw), int(by + bh))
                 
-                # Draw outer bounding boxes
+                # Draw the bounding box.
                 cv2.rectangle(annotated_frame, p1, p2, color, thickness=2)
                 
-                # Overlay tiny target label tags
+                # Add the class ID and confidence score.
                 label_text = f"ID:{cls_id} {score:.2f}"
                 cv2.putText(annotated_frame, label_text, (p1[0], max(p1[1] - 5, 0)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, thickness=1, lineType=cv2.LINE_AA)
 
-        # Publish Output coordinate indices array
+        # --- Publish results ---
+        # Publish the 2D detections.
         self.detection_pub.publish(detections)
         
-        # Convert annotated frame matrix back to ROS image format
+        # Convert and publish the annotated image.
         try:
             annotated_msg = self.bridge.cv2_to_imgmsg(annotated_frame, encoding="bgr8")
             annotated_msg.header = msg.header
@@ -256,10 +257,10 @@ class CameraDetectorNode(Node):
         except Exception as e:
             self.get_logger().error(f'Failed to translate image arrays: {e}')
 
-        # Log complete pipeline performance costs
+        # --- Performance metrics ---
         node_time_ms = (time.perf_counter() - node_start_time) * 1000.0
 
-        # Record completed callbacks for the latency plot. Keep memory bounded.
+        # Retain a bounded history for the latency plot.
         self.inference_latencies.append(inference_time_ms)
         self.total_latencies.append(node_time_ms)
         max_samples = 10000
@@ -276,7 +277,7 @@ class CameraDetectorNode(Node):
             f"Total Callback Cost   : {node_time_ms:.2f}ms"
         )
     def save_latency_distribution_plot(self):
-        """ METHOD 3: Saves a latency histogram plot inside the dynamic package folder """
+        """Save latency histograms to the installed package's performance log directory."""
         if not self.total_latencies:
             return
             
@@ -292,7 +293,7 @@ class CameraDetectorNode(Node):
         plt.legend(loc='upper right')
         plt.grid(True, alpha=0.3)
         
-        # Assemble path: install/kitti_r1_perception/share/kitti_r1_perception/perf_logs/camera_latency_distribution.png
+        # Save the plot under the installed package's performance log directory.
         log_dir = os.path.join(self.package_share_dir, 'perf_logs')
         os.makedirs(log_dir, exist_ok=True)
         plot_path = os.path.join(log_dir, 'camera_latency_distribution.png')
@@ -318,10 +319,9 @@ def main(args=None):
             node.save_latency_distribution_plot()
             node.destroy_node()
 
-        # FIXED: Enforce clear context protection guard for ROS 2 Jazzy
+        # Shut down the ROS context only if it is still active.
         if rclpy.ok():
             rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
-

@@ -1,9 +1,9 @@
 {
-  "created_utc": "2026-10-12T16:56:31+00:00",
+  "created_utc": "2026-10-27T17:49:42+00:00",
   "requested_runs": 3,
   "bag_path": "/home/gergo/work/3d_perceptron_kitti/2011_09_29_drive_0071_sync",
   "bag_size_bytes": 5012821546,
-  "play_rate": 0.5,
+  "play_rate": 1.0,
   "playback_delay_s": 8.0,
   "sample_interval_s": 1.0,
   "run_timeout_s": 900.0,
@@ -15,13 +15,13 @@
     "ros_distro": "jazzy",
     "cpu_model": "12th Gen Intel(R) Core(TM) i5-12400",
     "logical_cpu_count": 12,
-    "memory_total_bytes": 33415213056,
+    "memory_total_bytes": 33415208960,
     "gpu_name": "NVIDIA GeForce RTX 4060",
-    "gpu_driver": "615.71.09",
+    "gpu_driver": "615.71.10",
     "gpu_memory_total_mb": 8188.0
   },
   "git": {
-    "commit": "c5d53b6",
+    "commit": "5ead6e7",
     "worktree_dirty": true
   }
 }

@@ -46,19 +46,21 @@ The end-to-end pipeline has been rigorously profiled and automated across multip
 - **Dataset / Workload:** KITTI Sync Bag (`2011_09_29_drive_0071_sync`, ~5.0 GB)
 
 ### End-to-End Execution Profile
-Empirical median metrics recorded at standard 1.0x native playback frequency (10 Hz):
+Empirical metrics recorded across 3 consecutive automated evaluation runs at standard 1.0x native playback frequency (10 Hz). 
 
-| Pipeline Component | Underlying Operations / Framework | Median Latency | Target Bound |
+*Note: Latency values represent the median of each completed run's mean execution time (not the p50 value of the raw frame-by-frame distribution).*
+
+| Pipeline Component | Underlying Operations / Framework | Performance Metric (Median of Means) | Target Bound |
 | :--- | :--- | :--- | :--- |
-| **LiDAR Processing** | NumPy ROI Filter + **Open3D GPU CUDA RANSAC & DBSCAN** | **33.06 ms** | < 100.0 ms (10Hz) |
-| **Camera Inference** | **ONNX Runtime (CUDA Execution Provider)** | **5.01 ms** | < 33.3 ms (30Hz) |
-| **Geometric Fusion** | Association & Extrinsic PyTorch Broadcasting | **2.74 ms** | < 10.0 ms |
-| **BEV Visualization** | Asynchronous Bird's-Eye-View Canvas Render | **2.59 ms** | < 20.0 ms |
+| **LiDAR Processing** | NumPy ROI Filter + **Open3D GPU CUDA RANSAC & DBSCAN** | **31.45 ms** (Total Callback) | < 100.0 ms (10Hz) |
+| **Camera Inference** | **ONNX Runtime (CUDA Execution Provider)** | **4.89 ms** (Pure Inference) | < 33.3 ms (30Hz) |
+| **Geometric Fusion** | Association & Extrinsic PyTorch Broadcasting | **2.67 ms** (Compute Interval) | < 10.0 ms |
+| **BEV Visualization** | Asynchronous Bird's-Eye-View Canvas Render | **2.78 ms** (Total Callback) | < 20.0 ms |
 
 ### Key Bottleneck Analysis
-- **GPU CUDA DBSCAN (3D Spatial Clustering):** **21.12 ms**. Represents the primary processing loop footprint, showing an exceptionally tight variance of <0.42 ms due to the fixed driver allocation ceilings.
-- **Total Camera Callback Overhead:** **11.31 ms**. While pure ONNX CUDA inference requires only 5.01 ms, the remaining overhead is bound to CPU-side image preprocessing, layout restructuring to NCHW, GPU-CPU memory transfer, and OpenCV Non-Maximum Suppression (NMS).
-- **Total Fusion Callback:** **3.51 ms**. Maintained via an optimized `ApproximateTimeSynchronizer` queue layout.
+- **GPU CUDA DBSCAN (3D Spatial Clustering):** **20.25 ms** (median run mean). Represents the primary processing loop footprint, showing an exceptionally tight variance across the entire evaluation track.
+- **Total Camera Callback Overhead:** **11.31 ms**. While pure ONNX CUDA inference requires only 4.89 ms, the remaining overhead is bound to CPU-side image preprocessing, layout restructuring to NCHW, GPU-CPU memory transfer, and OpenCV Non-Maximum Suppression (NMS).
+- **Total Fusion Callback:** **3.46 ms**. Maintained via an optimized `ApproximateTimeSynchronizer` queue layout.
 
 ### Resource Utilization Summary
 - **Memory Footprint:** Peak VRAM consumption stabilized at **~1435 MiB**.
