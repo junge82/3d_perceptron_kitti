@@ -10,11 +10,14 @@ A production-ready ROS 2 Jazzy application that integrates camera and LiDAR data
 
 ## 🛠️ Tech Stack & Key Features
 
-- **Robotics Framework:** `ROS 2 Jazzy` utilizing native node composition, simulation clock synchronization, and optimized execution loops.
-- **Deep Learning Inference:** `ONNX Runtime` utilizing CUDA execution providers and explicit I/O binding for real-time 2D object detection on the left KITTI camera stream.
-- **Point Cloud Processing:** `Open3D` and `NumPy` for ground plane removal (RANSAC), Spatial ROI filtering, and GPU-accelerated DBSCAN clustering.
-- **Sensor Fusion Architecture:** Vectorized parallel matrix broadcasting using `PyTorch` CUDA tensors to match 2D camera detections with projected 3D LiDAR cluster centroids via factory-calibrated rigid matrices.
-- **Determinism & Reproducibility:** 100% reproducible environments powered by `Pixi` (RoboStack conda ecosystem) ensuring zero-system-dependency deployment.
+**Python 3.12 · ROS 2 Jazzy · Open3D · OpenCV · PyTorch · ONNX Runtime · CUDA · KITTI · Sensor Fusion · Pixi**
+
+- **Robotics Framework & Core Language:** `ROS 2 Jazzy` és `Python 3.12` környezet native node composition-nel, szimulációs órajel-szinkronizációval és optimalizált végrehajtási ciklusokkal.
+- **Deep Learning Inference:** `ONNX Runtime` CUDA execution provider-rel és explicit I/O binding-gal a bal oldali KITTI kamera stream valós idejű 2D objektumdetektálásához.
+- **Point Cloud & Image Processing:** `Open3D`, `OpenCV` és `NumPy` a talajsík eltávolításához (RANSAC), a térbeli ROI szűréshez, a GPU-gyorsított DBSCAN klaszterezéshez, valamint a BEV (Bird's-Eye-View) képalkotáshoz.
+- **Sensor Fusion Architecture:** Vektorizált, párhuzamos mátrix-broadcasting `PyTorch` CUDA tenzorok segítségével, amely a 2D kamera detektálásokat rendeli hozzá a vetített 3D LiDAR klaszter középpontokhoz gyárilag kalibrált rigid mátrixokon keresztül.
+- **Determinism & Reproducibility:** 100%-ban reprodukálható környezet a `Pixi` (RoboStack condaökoszisztéma) segítségével, garantálva a rendszerszintű függőségektől mentes telepítést.
+
 
 ---
 
@@ -77,6 +80,57 @@ Empirical metrics recorded across 3 consecutive automated evaluation runs at sta
 The Pixi environment fully wraps ROS 2 Jazzy and all required system/Python dependencies cleanly in user space, ensuring cross-machine reproducibility.
 
 ---
+
+---
+
+## 📅 Data Acquisition & Preparation
+
+The pipeline requires the synchronized and rectified raw KITTI data converted into ROS 2 MCAP or Bag format. The default launch system expects the `2011_09_29_drive_0071_sync` dataset.
+
+### 1. License Agreement
+The KITTI dataset is strictly released under a **Creative Commons Attribution-NonCommercial-ShareAlike 3.0** license. By downloading the data, you agree that it will be used solely for non-commercial research purposes.
+
+### 2. Download and Extraction
+Automate the raw data download using the `raw_data_downloader.sh` script provided in the repository. This will download the Velodyne point clouds, camera images, and calibration matrices:
+
+```bash
+# Ensure the script is executable (if you cloned the repo and the bit is not set)
+chmod +x raw_data_downloader.sh
+
+# Execute the automated downloader script
+./raw_data_downloader.sh
+```
+
+Alternatively, you can manually acquire the archives from the [KITTI Raw Data Repository](https://www.cvlibs.net/datasets/kitti/raw_data.php):
+To guarantee data integrity before processing, verify the MD5 checksums of the downloaded zip files.
+Run the following command in the directory where the downloaded zip file is located:
+- **Total Download Size:** ~4.1 GB (Compressed) / ~5.0 GB (Extracted)
+
+To guarantee data integrity after manual downloads or custom mirrors, always generate and verify the local checksum against your team's reference hash:
+```bash
+# Generate MD5 checksum to verify archive integrity
+md5sum 2011_09_29_drive_0071_sync.zip
+```
+
+### 3. Converting to ROS 2 MCAP Format
+Once extracted, use the internal high-throughput converter to transform the raw KITTI files into a high-performance MCAP storage file for ROS 2 Jazzy:
+
+> **Note:** The typical workflow is to first run `./raw_data_downloader.sh` to download and extract the KITTI data, then run `pixi run python mcap_converter/kitti_to_mcap.py` to convert the data into MCAP format. Both steps are required before launching the pipeline.
+
+```bash
+# Navigate to and run the high-throughput converter
+pixi run python mcap_converter/kitti_to_mcap.py
+```
+
+### 4. Automated Data Validation & Error Handling
+The pipeline launch script (`myperception.launch.py`) features defensive asset validation. If the required bag or MCAP file is missing from the configured path, the launch sequence will gracefully terminate immediately to prevent continuous node crashes.
+
+### Expected Failure Output
+
+Example output:
+```text
+none
+```
 
 ## 🚀 Execution & Run Guide
 
