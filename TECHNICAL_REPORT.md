@@ -165,8 +165,8 @@ Raw logs, one-second resource samples, JSON metadata, and run summaries are link
 
 📊 Structural Insights from the 1.0x Real-Time Update
 
-• Drastically Tightened Variance (Range): Look at the Fusion total callback range narrowing down from a loose 3.10–5.06 ms at half-speed to an exceptionally tight 3.46–3.54 ms at full native speed. This proves that playing the dataset at its original 10 Hz frequency helps the ApproximateTimeSynchronizer maintain an optimal queue, eliminating buffer searching jitter on the CPU.
-• Deterministic VRAM Processing: The LiDAR DBSCAN range (21.00–21.42 ms) shows less than 0.42 ms of total variance across three entire evaluation runs, indicating that the MAX_GPU_COMPUTE_POINTS allocation ceiling completely blocks driver-level cache churn.
+• Drastically Tightened Variance (Range): Look at the Fusion total callback range, which stabilizes tightly between 3.21–3.46 ms at full native speed with a standard deviation of just **σ = 0.14 ms**. This proves that playing the dataset at its original 10 Hz frequency helps the ApproximateTimeSynchronizer maintain an optimal queue, eliminating buffer searching jitter on the CPU.
+• Deterministic VRAM Processing: The LiDAR DBSCAN range (20.03–21.68 ms) shows an exceptionally tight standard deviation of **σ = 0.73 ms** (variance of **0.54 ms²**) across three entire evaluation runs, indicating that the MAX_GPU_COMPUTE_POINTS allocation ceiling completely blocks driver-level cache churn.
 
 
 ## References
