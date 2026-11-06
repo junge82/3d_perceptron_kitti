@@ -79,6 +79,50 @@ Empirical metrics recorded across 3 consecutive automated evaluation runs at sta
 
 The Pixi environment fully wraps ROS 2 Jazzy and all required system/Python dependencies cleanly in user space, ensuring cross-machine reproducibility.
 
+### Camera Model
+
+The camera node loads `yolov8n.onnx` from the installed package's `torch_home/` directory. The repository model is an Ultralytics YOLOv8n detection model pretrained on COCO; it is not fine-tuned on KITTI.
+
+| Artifact | Expected value |
+| :--- | :--- |
+| Runtime model path | `ros2_ws/src/kitti_r1_perception/torch_home/yolov8n.onnx` |
+| Input | `images`, float32 NCHW; runtime input shape `(1, 3, 384, 1248)` |
+| Output | `output0`, shape `(1, 84, N)`; 4 box values and 80 COCO class scores per candidate |
+| Exporter | Ultralytics `8.4.104`; model metadata reports PyTorch `2.10.0` |
+| SHA-256, `yolov8n.onnx` | `b349972be7113091a720bdf0d46d65729ed93483df75c45349beffe9f6abde39` |
+| SHA-256, `yolov8n.pt` source weights | `f59b3d833e2ff32e194b5bb8e08d211dc7c5bdf144b90d2c8412c47ccfc83b36` |
+
+Verify the model files after cloning or exporting:
+
+```bash
+sha256sum \
+  ros2_ws/src/kitti_r1_perception/torch_home/yolov8n.onnx \
+  ros2_ws/src/kitti_r1_perception/torch_home/yolov8n.pt
+```
+
+The matching digest confirms the checked model artifact. A newly exported model may have a different digest because exporter versions or settings changed; verify its input/output contract and test it with the pipeline before replacing the repository model.
+
+#### Export the model
+
+The source weights are named `yolov8n.pt` and belong in the same `torch_home/` directory. If they are not present, the export script uses Ultralytics to download the official weights. Export with the script that matches the camera node's KITTI input dimensions:
+
+```bash
+# Create an isolated environment for model export (not needed to run the pipeline).
+python3 -m venv /tmp/kitti-yolo-export
+source /tmp/kitti-yolo-export/bin/activate
+python -m pip install --upgrade pip
+python -m pip install "ultralytics==8.4.104"
+
+# Run from torch_home so both the weights and ONNX output land in the expected directory.
+(cd ros2_ws/src/kitti_r1_perception/torch_home && python export.py)
+deactivate
+
+# Verify the exported artifact from the repository root.
+sha256sum ros2_ws/src/kitti_r1_perception/torch_home/yolov8n.onnx
+```
+
+`export.py` exports at `384 x 1248` with dynamic dimensions, while the camera node resizes each image to that same runtime shape. `export_to_onnx.py` currently defaults to a static `640 x 640` export; do not use its defaults for the pipeline, as that shape does not match the camera node. The ONNX metadata identifies the model as AGPL-3.0; review the model's licensing terms before redistributing it or using it commercially.
+
 ---
 
 ---
