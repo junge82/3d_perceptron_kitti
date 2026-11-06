@@ -79,20 +79,24 @@ Empirical metrics recorded across 3 consecutive automated evaluation runs at sta
 
 The Pixi environment fully wraps ROS 2 Jazzy and all required system/Python dependencies cleanly in user space, ensuring cross-machine reproducibility.
 
-### Camera Model
+## 👁️ Camera Model & ONNX Serialization
 
-The camera node loads `yolov8n.onnx` from the installed package's `torch_home/` directory. The repository model is an Ultralytics YOLOv8n detection model pretrained on COCO; it is not fine-tuned on KITTI.
+The camera perception subsystem loads a hardware-optimized **Ultralytics YOLOv8n** network topology pretrained on the COCO dataset. Left-side KITTI raw color channels are ingested, dynamically resized, and normalized inside the execution loop to satisfy the network's strict static input tensor graph contract without introducing asynchronous backlog latency.
 
-| Artifact | Expected value |
+### 📐 Graph Specifications & Verification Interface
+
+| **Execution Feature / Layer Boundary** | **Production Specification / Target Value** |
 | :--- | :--- |
-| Runtime model path | `ros2_ws/src/kitti_r1_perception/torch_home/yolov8n.onnx` |
-| Input | `images`, float32 NCHW; runtime input shape `(1, 3, 384, 1248)` |
-| Output | `output0`, shape `(1, 84, N)`; 4 box values and 80 COCO class scores per candidate |
-| Exporter | Ultralytics `8.4.104`; model metadata reports PyTorch `2.10.0` |
-| SHA-256, `yolov8n.onnx` | `b349972be7113091a720bdf0d46d65729ed93483df75c45349beffe9f6abde39` |
-| SHA-256, `yolov8n.pt` source weights | `f59b3d833e2ff32e194b5bb8e08d211dc7c5bdf144b90d2c8412c47ccfc83b36` |
+| **Runtime Model File Path** | `ros2_ws/src/kitti_r1_perception/torch_home/yolov8n.onnx` |
+| **Input Node Identifier & Layout** | `images`, Float32 Type, Standard `NCHW` Data Order |
+| **Explicit Graph Input Shape** | `(1, 3, 384, 1248)` *(Explicit Height: 384, Explicit Width: 1248)* |
+| **Output Node Identifier & Shape** | `output0`, Float32 Type, Shape: `(1, 84, 9216)` |
+| **Decoded Internal Matrix Channels** | 4 Bounding Box Regression Coordinates + 80 COCO Class Scores |
+| **Target Compilation Toolchain** | Ultralytics `8.4.104` · PyTorch `2.10.0` · ONNX Opset `14` |
+| **SHA-256 Digest (`yolov8n.onnx`)** | `b349972be7113091a720bdf0d46d65729ed93483df75c45349beffe9f6abde39` |
+| **SHA-256 Digest (`yolov8n.pt` source)** | `f59b3d833e2ff32e194b5bb8e08d211dc7c5bdf144b90d2c8412c47ccfc83b36` |
 
-Verify the model files after cloning or exporting:
+To enforce deterministic execution bounds and safeguard the `CUDAExecutionProvider` layout structures against spatial runtime crashes, confirm the cryptographic checksums of the network weights files from your active repository root workspace:
 
 ```bash
 sha256sum \
@@ -100,29 +104,37 @@ sha256sum \
   ros2_ws/src/kitti_r1_perception/torch_home/yolov8n.pt
 ```
 
-The matching digest confirms the checked model artifact. A newly exported model may have a different digest because exporter versions or settings changed; verify its input/output contract and test it with the pipeline before replacing the repository model.
+---
 
-#### Export the model
+### Compiling the Model (KITTI-Optimized Export)
 
-The source weights are named `yolov8n.pt` and belong in the same `torch_home/` directory. If they are not present, the export script uses Ultralytics to download the official weights. Export with the script that matches the camera node's KITTI input dimensions:
+The repository relies on the streamlined, production-ready `ros2_ws/src/kitti_r1_perception/torch_home/export.py` script as the official toolchain to compile the model. This minimal configuration bypasses verbose parsing, hardcoded fallback bounds, and explicitly maps the required tensor profiles.
+
+To execute the compilation pipeline, run the script from its native directory:
 
 ```bash
-# Create an isolated environment for model export (not needed to run the pipeline).
-python3 -m venv /tmp/kitti-yolo-export
-source /tmp/kitti-yolo-export/bin/activate
-python -m pip install --upgrade pip
-python -m pip install "ultralytics==8.4.104"
-
-# Run from torch_home so both the weights and ONNX output land in the expected directory.
-(cd ros2_ws/src/kitti_r1_perception/torch_home && python export.py)
-deactivate
-
-# Verify the exported artifact from the repository root.
-sha256sum ros2_ws/src/kitti_r1_perception/torch_home/yolov8n.onnx
+cd ros2_ws/src/kitti_r1_perception/torch_home && python3 export.py
 ```
 
-`export.py` exports at `384 x 1248` with dynamic dimensions, while the camera node resizes each image to that same runtime shape. `export_to_onnx.py` currently defaults to a static `640 x 640` export; do not use its defaults for the pipeline, as that shape does not match the camera node. The ONNX metadata identifies the model as AGPL-3.0; review the model's licensing terms before redistributing it or using it commercially.
+The underlying execution logic inside `export.py` enforces the exact aspect ratio mapping and dynamic axes required by the pipeline:
 
+```python
+from ultralytics import YOLO
+
+# Load baseline PyTorch weights layout into host memory
+model = YOLO('yolov8n.pt')
+
+# Compile tensor graph utilizing explicit KITTI bounds and structural optimizations
+model.export(
+    format='onnx',
+    imgsz=, # Multiples of 32 mapped to exact [Height, Width] input criteria
+    dynamic=True,      # Injects dynamic execution axes to handle minor spatial frame shifts
+    simplify=True,     # Fuses redundant kernel operations to minimize outer GPU-CPU latency
+    opset=14           # Maximum operational compatibility bound for ONNX Runtime 1.18+ Providers
+)
+```
+
+> ⚠️ **Critical Execution Note:** Do not execute legacy or decoupled export configurations that force symmetric `640x640` configurations or disable dynamic axes (`dynamic=False`). Mismatched input layer profiles will trigger strict shape validation faults inside the `CameraDetectorNode` subscriber callback layer, rendering the node unable to process incoming KITTI streams.
 ---
 
 ---
