@@ -152,11 +152,11 @@ class BEVVisualizerNode(Node):
 
     def _build_projection_matrix(self, cx=0.0, cy=0.0, yaw=0.0):
         """Build the affine transform from local coordinates to BEV pixels."""
-        cos_y, sin_y = np.cos(yaw), np.sin(yaw)
+        cos_yaw, sin_yaw = np.cos(yaw), np.sin(yaw)
         res_inv = 1.0 / self.resolution
         return np.array([
-            [-res_inv * sin_y, -res_inv * cos_y, res_inv * (self.max_y - cy)],
-            [-res_inv * cos_y,  res_inv * sin_y, res_inv * (self.max_x - cx)]
+            [-res_inv * sin_yaw, -res_inv * cos_yaw, res_inv * (self.max_y - cy)],
+            [-res_inv * cos_yaw,  res_inv * sin_yaw, res_inv * (self.max_x - cx)]
         ], dtype=np.float32)
 
     def _render_spatial_grid_layers(self, bev_img):
@@ -202,27 +202,31 @@ class BEVVisualizerNode(Node):
         """
         for det in fused_msg.detections:
             # Extract tracking coordinates from the 3D bounding box layer
-            cx = float(det.bbox.center.position.x)  
-            cy = float(det.bbox.center.position.y)
-            sx = float(det.bbox.size.x)  # Object length along the x-axis.
-            sy = float(det.bbox.size.y)  # Object width along the y-axis.
+            center_x = float(det.bbox.center.position.x)  
+            center_y = float(det.bbox.center.position.y)
+            physical_length = float(det.bbox.size.x)  # Object length along the x-axis.
+            physical_width = float(det.bbox.size.y)  # Object width along the y-axis.
 
             # Enforce Region of Interest (ROI) filtering layer bounds
-            if not (self.min_x <= cx <= self.max_x and self.min_y <= cy <= self.max_y):
+            if not (self.min_x <= center_x <= self.max_x and self.min_y <= center_y <= self.max_y):
                 continue
                     
-            distance_meters = np.hypot(cx, cy)
+            distance_meters = np.hypot(center_x, center_y)
                 
             # Unpack ROS orientation layout directly using standard order mapping
             q = det.bbox.center.orientation
             _, _, yaw = transforms3d.euler.quat2euler([q.w, q.x, q.y, q.z])
 
+            # Define 2D perimeter corners inside the local coordinate frame using full names
+            half_length = physical_length / 2.0
+            half_width  = physical_width / 2.0
+
             # Define 2D perimeter corners inside the local coordinate frame
             local_corners = np.array([
-                [ sx/2,  sy/2],  # Front-Left
-                [ sx/2, -sy/2],  # Front-Right
-                [-sx/2, -sy/2],  # Rear-Right
-                [-sx/2,  sy/2]   # Rear-Left
+                [ half_length,  half_width],  # Front-Left
+                [ half_length, -half_width],  # Front-Right
+                [-half_length, -half_width],  # Rear-Right
+                [-half_length,  half_width]   # Rear-Left
             ], dtype=np.float32)
 
             # Construct a homogeneous local coordinate matrix [4x2] -> [4x3] (X_local, Y_local, 1)
@@ -236,60 +240,62 @@ class BEVVisualizerNode(Node):
             # =========================================================================
 
             # --- SPATIAL LANE-BASED HEADING CORRECTION LAYER ---
-            # If the object is detected in the oncoming lane layout (cy > 0.5),
+            # If the object is detected in the oncoming lane layout (center_y > 0.5),
             # invert the rotation coefficients to enforce a 180-degree heading flip.
-            if cy > 0.5:
+            if center_y > 0.5:
                 yaw += np.pi
             # ---------------------------------------------------
-            M = self._build_projection_matrix(cx, cy, yaw)
+            M = self._build_projection_matrix(center_x, center_y, yaw)
 
             # Project local bounding box vertices directly into integer image pixels
-            pix_corners = np.dot(M, homogeneous_local.T).T.astype(np.int32)
+            # Mathematically identical, cleaner look, zero transpositions at runtime
+            pix_corners = np.dot(homogeneous_local, M.T).astype(np.int32)
             # ========================================================================= 
                 
             # Extract the detection class ID.
             cls_id = self._parse_class_id(det)                    
 
             # Use the class-specific style, or a green fallback for unknown classes.
-            visual = CLASS_VISUALS.get(cls_id, {"name": f"ID:{cls_id}", "color": (0, 255, 0)})
+            visual_style = CLASS_VISUALS.get(cls_id, {"name": f"ID:{cls_id}", "color": (0, 255, 0)})
                 
             # Draw the projected bounding-box outline.
-            cv2.polylines(bev_img, [pix_corners.reshape(-1, 1, 2)], isClosed=True, color=visual["color"], thickness=2)
+            cv2.polylines(bev_img, [pix_corners.reshape(-1, 1, 2)], isClosed=True, color=visual_style["color"], thickness=2)
                 
             # Call heading draw pipeline
-            f_mid_x, f_mid_y, center_pixel_x, center_pixel_y = self._draw_heading_vector(bev_img, cx, cy, sx, M, visual)
+            front_mid_x, front_mid_y, center_pixel_x, center_pixel_y = self._draw_heading_vector(bev_img, center_x, center_y, pix_corners, visual_style)
 
             # 🌟 FIX: Passed raw scalars directly without array subscription indexing
-            self._log_heading_verification(distance_meters, q, yaw, cls_id, f_mid_x, f_mid_y, center_pixel_x, center_pixel_y)
+            self._log_heading_verification(distance_meters, q, yaw, cls_id, front_mid_x, front_mid_y, center_pixel_x, center_pixel_y)
 
             # Label the detection with its class and distance.
-            display_text = f"{visual['name']} [{distance_meters:.1f}m]"
+            display_text = f"{visual_style['name']} [{distance_meters:.1f}m]"
             cv2.putText(bev_img, display_text, (int(pix_corners[0, 0]), int(pix_corners[0, 1] - 5)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, visual["color"], 1, cv2.LINE_AA)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, visual_style["color"], 1, cv2.LINE_AA)
 
-    def _log_heading_verification(self, distance_meters, q, yaw, cls_id, f_mid_px, f_mid_py, c_px, c_py):
+    def _log_heading_verification(self, distance_meters, q, yaw, cls_id, front_mid_px, front_mid_py, c_px, c_py):
         # Log heading geometry at debug level for optional diagnostics.
-        dx = f_mid_px - c_px
-        dy = f_mid_py - c_py
+        dx = front_mid_px - c_px
+        dy = front_mid_py - c_py
         self.get_logger().debug(
                     f"\n[HEADING CHECK] Object Class: {cls_id} | Distance: {distance_meters:.1f}m\n"
                     f"└─ Raw Yaw (Radians): {yaw:.4f} | Quat [w,x,y,z]: [{q.w:.2f}, {q.x:.2f}, {q.y:.2f}, {q.z:.2f}]\n"
                     f"└─ Pixel Delta vector [dX, dY]: [{dx}, {dy}]"
                 )
 
-    def _draw_heading_vector(self, bev_img, cx, cy, sx, M, visual):
-        # Project structural front-mid profile reference dot using the identical M matrix
-        front_mid_local = np.array([sx/2, 0.0, 1.0], dtype=np.float32)
-        front_mid_px = np.dot(M, front_mid_local).astype(np.int32)
+    def _draw_heading_vector(self, bev_img, center_x, center_y, pix_corners, visual):
+        """Calculates and draws the front bumper midpoint using the projected corners."""
+        # Clean, self-explanatory geometry: midpoint between Front-Left (0) and Front-Right (1) corners
+        front_mid_x = int((pix_corners[0, 0] + pix_corners[1, 0]) // 2)
+        front_mid_y = int((pix_corners[0, 1] + pix_corners[1, 1]) // 2)
         
-        # Render a solid tracking heading dot exactly over the object's bumper profile
-        cv2.circle(bev_img, (front_mid_px[0], front_mid_px[1]), 5, visual["color"], -1)
+        # Render the tracking heading dot over the calculated midpoint
+        cv2.circle(bev_img, (front_mid_x, front_mid_y), 5, visual["color"], -1)
         
-        # Execute background diagnostics tracking verification
-        center_pixel_x = int((self.max_y - cy) / self.resolution) # World y maps to pixel x.
-        center_pixel_y = int((self.max_x - cx) / self.resolution) # World x maps to pixel y.
+        # Compute sensor baseline frames for diagnostic logs
+        center_pixel_x = int((self.max_y - center_y) / self.resolution)
+        center_pixel_y = int((self.max_x - center_x) / self.resolution)
         
-        return front_mid_px[0], front_mid_px[1], center_pixel_x, center_pixel_y
+        return front_mid_x, front_mid_y, center_pixel_x, center_pixel_y
 
     def _parse_class_id(self, det):
         """Extracts the class ID from a Detection3D message, handling potential variations in ROS 2 message structures."""
