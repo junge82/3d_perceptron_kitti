@@ -367,8 +367,8 @@ def create_kitti_raw_bag(sequence_dir, calib_dir, bag_path):
 
 if __name__ == '__main__':
     # Update paths to point directly to your dataset structure
-    KITTI_SEQUENCE = "/mnt/fastDisk/kitti3d/raw_data_downloader/2011_09_29/2011_09_29_drive_0071_sync"
-    KITTI_CALIB_DIR = "/mnt/fastDisk/kitti3d/raw_data_downloader/2011_09_26" # Dir holding calib_velo_to_cam.txt
+    KITTI_SEQUENCE = "/Your-path/raw_data_downloader/2011_09_29/2011_09_29_drive_0071_sync"
+    KITTI_CALIB_DIR = "/Your-path/raw_data_downloader/2011_09_26" # Dir holding calib_velo_to_cam.txt
     BAG_OUTPUT = "2011_09_29_drive_0071_sync"
     
     rclpy.init()

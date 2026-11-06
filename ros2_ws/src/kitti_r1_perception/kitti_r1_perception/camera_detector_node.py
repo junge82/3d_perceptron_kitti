@@ -15,12 +15,10 @@ from sensor_msgs.msg import Image
 from vision_msgs.msg import Detection2DArray, Detection2D, ObjectHypothesisWithPose
 from cv_bridge import CvBridge
 
-import cv2
-import time
-import os
+
+
+
 import matplotlib.pyplot as plt
-import numpy as np
-from ament_index_python.packages import get_package_share_directory
 
 class CameraDetectorNode(Node):
 

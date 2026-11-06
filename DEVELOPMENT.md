@@ -1,6 +1,6 @@
 # Developer Guide
 
-This guide is for changing, building, and validating the ROS 2 pipeline. For installation and first run, start with the [user README](README.md).
+Build, test, and extend the ROS 2 pipeline here. For prerequisites and the first end-to-end run, follow the [README Quick Start](README.md#quick-start).
 
 ## Where to Work
 
@@ -10,35 +10,30 @@ This guide is for changing, building, and validating the ROS 2 pipeline. For ins
 - `mcap_converter/`: KITTI raw-data conversion and converter tests.
 - `pixi.toml`: environment dependencies and the `run-pipeline` task.
 
-The [technical report](TECHNICAL_REPORT.md) has the architecture diagram, node behavior, and a qualified historical telemetry summary. Verify behavior against node and launch sources, and use `pixi.toml` as the source of truth for commands and dependencies. Earlier reports are retained in `oldnotes/` as historical material.
+Use the [technical report](TECHNICAL_REPORT.md) for architecture context. Verify implementation details against the node and launch sources; `pixi.toml` is the source of truth for dependencies and tasks.
 
 ## Build and Test
 
-Install the Pixi environment and build from the repository root:
+After completing the README setup, build from the repository root:
 
 ```bash
-pixi install
 pixi run colcon build --symlink-install
 ```
 
-Run the perception package's ROS lint tests after building:
+Run the perception package checks:
 
 ```bash
 pixi run colcon test --packages-select kitti_r1_perception
 pixi run colcon test-result --verbose
 ```
 
-The pipeline smoke run checks the configured GPU environment, builds, and launches the default bag:
+Run the focused fusion callback tests with a dedicated Pixi task:
 
 ```bash
-pixi run run-pipeline
+pixi run test-fusion
 ```
 
-For a different bag, pass its path to the main launch:
-
-```bash
-pixi run bash -c 'source install/setup.bash && ros2 launch kitti_r1_perception myperception.launch.py bag_path:=/absolute/path/to/bag'
-```
+The test calls the fusion callback with synthetic ROS messages and checks both a successful association and a rejected match. It does not start DDS nodes or require a GPU.
 
 The converter has focused output tests; see [mcap_converter/README.md](mcap_converter/README.md). They can be run with:
 
@@ -48,9 +43,9 @@ pixi run python -m unittest discover -s mcap_converter -p 'test_mcap_output.py'
 
 ## Changing the Pipeline
 
-Keep ROS topics consistent between publishers, subscribers, the bag converter, and the launch. The current node interfaces are summarized in the [technical report](TECHNICAL_REPORT.md#ros-interfaces); confirm them in source before updating documentation.
+Keep topic names and message types consistent across publishers, subscribers, the converter, and launch files. Confirm interface changes in source and update the [ROS interface summary](TECHNICAL_REPORT.md#ros-interfaces).
 
-The camera detector loads `torch_home/<model_version>.onnx` from the installed package share directory. Package assets under `kitti_r1_perception/torch_home/` are installed by `setup.py`. The detector initializes for a `1248 x 384` input, while `export_to_onnx.py` defaults to a square `640 x 640` export. Keep the exported model shape, preprocessing, and detector input assumptions aligned when changing models.
+For camera model setup and checksums, use the [README](README.md#camera-model). When changing the model, keep export settings, preprocessing, and detector input shape aligned. `setup.py` installs files under `kitti_r1_perception/torch_home/`.
 
 Fusion currently hard-codes camera intrinsics and LiDAR-to-camera extrinsics. The launch separately publishes placeholder `map -> velodyne` and `map -> camera` transforms. The MCAP's `CameraInfo` and `/tf_static` do not update those values yet; see the [sensor-frame notes](CompVisionKnowHow.md) for the planned calibration work.
 

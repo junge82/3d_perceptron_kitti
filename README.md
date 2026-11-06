@@ -1,27 +1,28 @@
 # KITTI 3D Perception Pipeline
 
-A production-ready ROS 2 Jazzy application that integrates camera and LiDAR data using 2D-projected geometric Frustum Fusion, low-latency deep learning 2D inference, and rigid calibration-matrix projections.
+A ROS 2 Jazzy pipeline for KITTI 3D perception, combining LiDAR geometry with camera detections through calibrated projection and geometric frustum fusion.
 
-## 👁️ Pipeline Demonstration
+## Pipeline Demonstration
 
 ![3D Perception Pipeline Processing](video/kimenet.gif)
 
 ---
 
-## 🛠️ Tech Stack & Key Features
+## Tech Stack
 
 **Python 3.12 · ROS 2 Jazzy · Open3D · OpenCV · PyTorch · ONNX Runtime · CUDA · KITTI · Sensor Fusion · Pixi**
 
-- **Robotics Framework & Core Language:** `ROS 2 Jazzy` and `Python 3.12`, with native node composition, simulation-clock synchronization, and optimized execution loops.
+**Robotics Framework & Core Language:** `ROS 2 Jazzy` and `Python 3.12`, with native node composition, simulation-clock synchronization, and optimized execution loops.
 - **Deep Learning Inference:** `ONNX Runtime` with the CUDA execution provider and explicit I/O binding for real-time 2D object detection on the left KITTI camera stream.
 - **Point Cloud & Image Processing:** `Open3D`, `OpenCV`, and `NumPy` for ground-plane removal (RANSAC), spatial ROI filtering, GPU-accelerated DBSCAN clustering, and BEV (Bird's-Eye View) rendering.
 - **Sensor Fusion Architecture:** Vectorized parallel matrix broadcasting with `PyTorch` CUDA tensors associates 2D camera detections with projected 3D LiDAR cluster centroids using factory-calibrated rigid transformation matrices.
 - **Determinism & Reproducibility:** A 100% reproducible environment powered by `Pixi` (the RoboStack conda ecosystem), enabling installation without system-level dependencies.
 
 
+
 ---
 
-## 📐 System Architecture
+## System Architecture
 
 ```mermaid
 graph TD
@@ -81,130 +82,72 @@ The Pixi environment fully wraps ROS 2 Jazzy and all required system/Python depe
 
 ## 👁️ Camera Model & ONNX Serialization
 
-The camera perception subsystem loads a hardware-optimized **Ultralytics YOLOv8n** network topology pretrained on the COCO dataset. Left-side KITTI raw color channels are ingested, dynamically resized, and normalized inside the execution loop to satisfy the network's strict static input tensor graph contract without introducing asynchronous backlog latency.
+The camera node uses YOLOv8n pretrained on COCO; it is not fine-tuned on KITTI. The node resizes the left camera image to `1248 x 384` and passes a float32 NCHW tensor.
 
-### 📐 Graph Specifications & Verification Interface
-
-| **Execution Feature / Layer Boundary** | **Production Specification / Target Value** |
+| Property | Value |
 | :--- | :--- |
-| **Runtime Model File Path** | `ros2_ws/src/kitti_r1_perception/torch_home/yolov8n.onnx` |
-| **Input Node Identifier & Layout** | `images`, Float32 Type, Standard `NCHW` Data Order |
-| **Explicit Graph Input Shape** | `(1, 3, 384, 1248)` *(Explicit Height: 384, Explicit Width: 1248)* |
-| **Output Node Identifier & Shape** | `output0`, Float32 Type, Shape: `(1, 84, 9216)` |
-| **Decoded Internal Matrix Channels** | 4 Bounding Box Regression Coordinates + 80 COCO Class Scores |
-| **Target Compilation Toolchain** | Ultralytics `8.4.104` · PyTorch `2.10.0` · ONNX Opset `14` |
-| **SHA-256 Digest (`yolov8n.onnx`)** | `b349972be7113091a720bdf0d46d65729ed93483df75c45349beffe9f6abde39` |
-| **SHA-256 Digest (`yolov8n.pt` source)** | `f59b3d833e2ff32e194b5bb8e08d211dc7c5bdf144b90d2c8412c47ccfc83b36` |
+| Model | `ros2_ws/src/kitti_r1_perception/torch_home/yolov8n.onnx` |
+| Runtime input | `(1, 3, 384, 1248)` |
+| Runtime output | `(1, 84, 9216)` (`output0`) |
+| ONNX graph | Dynamic spatial axes; opset 20 |
+| Export tooling | Ultralytics 8.4.104; PyTorch 2.10.0 |
+| SHA-256, ONNX | `b349972be7113091a720bdf0d46d65729ed93483df75c45349beffe9f6abde39` |
+| SHA-256, source weights | `f59b3d833e2ff32e194b5bb8e08d211dc7c5bdf144b90d2c8412c47ccfc83b36` |
 
-To enforce deterministic execution bounds and safeguard the `CUDAExecutionProvider` layout structures against spatial runtime crashes, confirm the cryptographic checksums of the network weights files from your active repository root workspace:
+The repository includes both model files. The Quick Start explains verification and optional re-export. The ONNX metadata identifies the model license as AGPL-3.0; review it before redistribution or commercial use.
 
-```bash
-sha256sum \
-  ros2_ws/src/kitti_r1_perception/torch_home/yolov8n.onnx \
-  ros2_ws/src/kitti_r1_perception/torch_home/yolov8n.pt
-```
+## Quick Start
 
----
+Run from the repository root on Linux with Pixi and a compatible NVIDIA driver. KITTI data is subject to a non-commercial license; review its terms before use.
 
-### Compiling the Model (KITTI-Optimized Export)
+1. **Install dependencies**
 
-The repository relies on the streamlined, production-ready `ros2_ws/src/kitti_r1_perception/torch_home/export.py` script as the official toolchain to compile the model. This minimal configuration bypasses verbose parsing, hardcoded fallback bounds, and explicitly maps the required tensor profiles.
+   ```bash
+   pixi install
+   ```
 
-To execute the compilation pipeline, run the script from its native directory:
+2. **Download and extract the KITTI sequence**
 
-```bash
-cd ros2_ws/src/kitti_r1_perception/torch_home && python3 export.py
-```
+   ```bash
+   chmod +x raw_data_downloader.sh
+   ./raw_data_downloader.sh
+   ```
 
-The underlying execution logic inside `export.py` enforces the exact aspect ratio mapping and dynamic axes required by the pipeline:
+   Also download and extract the `2011_09_26` calibration archive containing `calib_cam_to_cam.txt` and `calib_velo_to_cam.txt`.
 
-```python
-from ultralytics import YOLO
+3. **Convert the raw sequence to an MCAP bag**
 
-# Load baseline PyTorch weights layout into host memory
-model = YOLO('yolov8n.pt')
+   At the bottom of `mcap_converter/kitti_to_mcap.py`, set `KITTI_SEQUENCE` to the extracted `2011_09_29_drive_0071_sync` directory, `KITTI_CALIB_DIR` to the calibration directory, and `BAG_OUTPUT` to `2011_09_29_drive_0071_sync` in the repository root. Then run:
 
-# Compile tensor graph utilizing explicit KITTI bounds and structural optimizations
-model.export(
-    format='onnx',
-    imgsz=, # Multiples of 32 mapped to exact [Height, Width] input criteria
-    dynamic=True,      # Injects dynamic execution axes to handle minor spatial frame shifts
-    simplify=True,     # Fuses redundant kernel operations to minimize outer GPU-CPU latency
-    opset=14           # Maximum operational compatibility bound for ONNX Runtime 1.18+ Providers
-)
-```
+   ```bash
+   pixi run python mcap_converter/kitti_to_mcap.py
+   ```
 
-> ⚠️ **Critical Execution Note:** Do not execute legacy or decoupled export configurations that force symmetric `640x640` configurations or disable dynamic axes (`dynamic=False`). Mismatched input layer profiles will trigger strict shape validation faults inside the `CameraDetectorNode` subscriber callback layer, rendering the node unable to process incoming KITTI streams.
----
+   The converter deletes and recreates the configured output path.
 
----
+4. **Verify the camera model**
 
-## 📅 Data Acquisition & Preparation
+   The repository includes the ONNX model and source weights. Check their hashes against the [Camera Model](#camera-model) table:
 
-The pipeline requires the synchronized and rectified raw KITTI data converted into ROS 2 MCAP or Bag format. The default launch system expects the `2011_09_29_drive_0071_sync` dataset.
+   ```bash
+   sha256sum \
+     ros2_ws/src/kitti_r1_perception/torch_home/yolov8n.onnx \
+     ros2_ws/src/kitti_r1_perception/torch_home/yolov8n.pt
+   ```
 
-### 1. License Agreement
-The KITTI dataset is strictly released under a **Creative Commons Attribution-NonCommercial-ShareAlike 3.0** license. By downloading the data, you agree that it will be used solely for non-commercial research purposes.
+   To re-export, install Ultralytics `8.4.104` in an isolated Python environment and run `torch_home/export.py` from that directory. The script downloads the official weights if they are missing.
 
-### 2. Download and Extraction
-Automate the raw data download using the `raw_data_downloader.sh` script provided in the repository. This will download the Velodyne point clouds, camera images, and calibration matrices:
+5. **Build and launch**
 
-```bash
-# Ensure the script is executable (if you cloned the repo and the bit is not set)
-chmod +x raw_data_downloader.sh
+   ```bash
+   pixi run run-pipeline
+   ```
 
-# Execute the automated downloader script
-./raw_data_downloader.sh
-```
+   This validates the GPU environment, builds the ROS 2 workspace, and launches using the default bag path `2011_09_29_drive_0071_sync`.
 
-Alternatively, you can manually acquire the archives from the [KITTI Raw Data Repository](https://www.cvlibs.net/datasets/kitti/raw_data.php):
-To guarantee data integrity before processing, verify the MD5 checksums of the downloaded zip files.
-Run the following command in the directory where the downloaded zip file is located:
-- **Total Download Size:** ~4.1 GB (Compressed) / ~5.0 GB (Extracted)
+## Customizing Playback
 
-To guarantee data integrity after manual downloads or custom mirrors, always generate and verify the local checksum against your team's reference hash:
-```bash
-# Generate MD5 checksum to verify archive integrity
-md5sum 2011_09_29_drive_0071_sync.zip
-```
-
-### 3. Converting to ROS 2 MCAP Format
-Once extracted, use the internal high-throughput converter to transform the raw KITTI files into a high-performance MCAP storage file for ROS 2 Jazzy:
-
-> **Note:** The typical workflow is to first run `./raw_data_downloader.sh` to download and extract the KITTI data, then run `pixi run python mcap_converter/kitti_to_mcap.py` to convert the data into MCAP format. Both steps are required before launching the pipeline.
-
-```bash
-# Navigate to and run the high-throughput converter
-pixi run python mcap_converter/kitti_to_mcap.py
-```
-
-### 4. Automated Data Validation & Error Handling
-The pipeline launch script (`myperception.launch.py`) features defensive asset validation. If the required bag or MCAP file is missing from the configured path, the launch sequence will gracefully terminate immediately to prevent continuous node crashes.
-
-### Expected Failure Output
-
-Example output:
-```text
-none
-```
-
-## 🚀 Execution & Run Guide
-
-From the repository root, install dependencies and execute the launch system using a single toolchain:
-
-```bash
-# Install and cache dependencies in an isolated workspace
-pixi install
-
-# Run the complete end-to-end perception pipeline with RViz visualization
-pixi run run-pipeline
-```
-
-The automation task verifies your local GPU architecture, builds the isolated ROS workspace, brings up all pipeline perception nodes alongside RViz2, and plays back the default data bag using the simulation clock. Logs are preserved in `pipeline_session.log`.
-
-### Customizing Playback & Parameters
-
-To build manually and run against custom bags or change runtime parameters:
+To run with a different bag or change launch parameters:
 
 ```bash
 # Explicit workspace compilation
@@ -214,7 +157,7 @@ pixi run colcon build --symlink-install
 pixi run bash -c 'source install/setup.bash && ros2 launch kitti_r1_perception myperception.launch.py bag_path:=/absolute/path/to/bag'
 ```
 
-*Note: The main launch file accepts tuning parameters such as `play_rate`, `playback_delay`, and specific clustering thresholds. See [`myperception.launch.py`](ros2_ws/src/kitti_r1_perception/launch/myperception.launch.py) for the complete interface configuration.*
+The launch file accepts parameters such as `play_rate`, `playback_delay`, and clustering thresholds. See [`myperception.launch.py`](ros2_ws/src/kitti_r1_perception/launch/myperception.launch.py) for details.
 
 ---
 

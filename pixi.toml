@@ -70,3 +70,4 @@ run-pipeline = { cmd = "bash -c 'export PYTHONUNBUFFERED=1 && ROS_LOG_DIR=log &&
 run-separated = { cmd = "bash -c 'export PYTHONUNBUFFERED=1 && export ROS_LOG_DIR=log && colcon build --symlink-install && source install/setup.bash && gnome-terminal --title=\"ROS2 Infrastructure\" -- bash -c \"source install/setup.bash; export ROS_LOG_DIR=log; ros2 launch kitti_r1_perception myperception_infrastructure.launch.py; exec bash\"'", depends-on = ["validate-gpu"] }
 
 benchmark-pipeline = { cmd = "python benchmark_pipeline.py", depends-on = ["validate-gpu"] }
+test-fusion = { cmd = "bash -c 'colcon build --symlink-install && source install/setup.bash && PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest ros2_ws/src/kitti_r1_perception/test/test_frustum_fusion.py -q'" }
