@@ -15,9 +15,13 @@
 
 from types import SimpleNamespace
 
+from kitti_r1_perception.calibration import (
+    K_KITTI,
+    T_LIDAR_TO_CAM,
+)
 from kitti_r1_perception.frustum_fusion_node import FrustumFusionNode
-import numpy as np
 from std_msgs.msg import Header
+import numpy as np
 import torch
 from vision_msgs.msg import (
     Detection2D,
@@ -59,22 +63,9 @@ def _make_fusion_harness(match_radius=50.0):
     node.match_radius = match_radius
     node.logger = _Logger()
     node.fused_pub = _Publisher()
-
-    camera_intrinsics = np.array([
-        [721.5377, 0.0, 609.5593],
-        [0.0, 721.5377, 172.854],
-        [0.0, 0.0, 1.0],
-    ], dtype=np.float32)
-    lidar_to_camera = np.array([
-        [7.533745e-03, -9.999714e-01, -6.166020e-04, -4.069766e-03],
-        [1.480249e-02, 7.280733e-04, -9.998902e-01, -7.631618e-02],
-        [9.998621e-01, 7.523790e-03, 1.480755e-02, -2.717806e-01],
-        [0.0, 0.0, 0.0, 1.0],
-    ], dtype=np.float32)
-
-    node.K_tensor = torch.from_numpy(camera_intrinsics)
-    node.R_tensor = torch.from_numpy(lidar_to_camera[:3, :3])
-    node.t_tensor = torch.from_numpy(lidar_to_camera[:3, 3])
+    node.K_tensor = torch.from_numpy(K_KITTI)
+    node.R_tensor = torch.from_numpy(T_LIDAR_TO_CAM[:3, :3])
+    node.t_tensor = torch.from_numpy(T_LIDAR_TO_CAM[:3, 3])
     return node
 
 

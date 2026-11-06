@@ -6,6 +6,10 @@ from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from kitti_r1_perception.calibration import (
+    MAP_TO_VELODYNE_QUATERNION,
+    MAP_TO_VELODYNE_TRANSLATION,
+)
 
 def generate_launch_description():
     use_sim_time_arg = DeclareLaunchArgument(
@@ -140,7 +144,16 @@ def generate_launch_description():
     map_to_velodyne_tf_publisher = Node(
         package='tf2_ros', executable='static_transform_publisher', name='map_to_velodyne_tf',
         parameters=[{'use_sim_time': sim_time_config}],
-        arguments=['--x', '0.2729', '--y', '-0.0020', '--z', '-0.0723', '--qx', '0.0', '--qy', '0.0', '--qz', '1.0', '--qw', '0.0', '--frame-id', 'map', '--child-frame-id', 'velodyne']
+        arguments=[
+            '--x', f'{MAP_TO_VELODYNE_TRANSLATION[0]:.8f}',
+            '--y', f'{MAP_TO_VELODYNE_TRANSLATION[1]:.8f}',
+            '--z', f'{MAP_TO_VELODYNE_TRANSLATION[2]:.8f}',
+            '--qx', f'{MAP_TO_VELODYNE_QUATERNION[0]:.8f}',
+            '--qy', f'{MAP_TO_VELODYNE_QUATERNION[1]:.8f}',
+            '--qz', f'{MAP_TO_VELODYNE_QUATERNION[2]:.8f}',
+            '--qw', f'{MAP_TO_VELODYNE_QUATERNION[3]:.8f}',
+            '--frame-id', 'map', '--child-frame-id', 'velodyne',
+        ]
     )
 
     return LaunchDescription([

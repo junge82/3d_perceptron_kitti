@@ -115,6 +115,14 @@ Run from the repository root on Linux with Pixi and a compatible NVIDIA driver. 
 
    Also download and extract the `2011_09_26` calibration archive containing `calib_cam_to_cam.txt` and `calib_velo_to_cam.txt`.
 
+   Frustum fusion uses `K_KITTI` and `T_LIDAR_TO_CAM` from [`calibration.py`](ros2_ws/src/kitti_r1_perception/kitti_r1_perception/calibration.py). To inspect the inverse of `T_LIDAR_TO_CAM` (camera-to-LiDAR), optionally run [`calculate_camera_to_lidar_transform.py`](kitti_tf_calc/calculate_camera_to_lidar_transform.py) from the repository root:
+
+   ```bash
+   pixi run python kitti_tf_calc/calculate_camera_to_lidar_transform.py
+   ```
+
+   The script reads the shared matrix from `calibration.py` and prints the inverse translation and rotation as a quaternion. This output is for inspection only; the launch files do not use the script's quaternion. They use the separately stored `MAP_TO_VELODYNE_TRANSLATION` and original `MAP_TO_VELODYNE_QUATERNION` constants from `calibration.py`.
+
 3. **Convert the raw sequence to an MCAP bag**
 
    At the bottom of `mcap_converter/kitti_to_mcap.py`, set `KITTI_SEQUENCE` to the extracted `2011_09_29_drive_0071_sync` directory, `KITTI_CALIB_DIR` to the calibration directory, and `BAG_OUTPUT` to `2011_09_29_drive_0071_sync` in the repository root. Then run:

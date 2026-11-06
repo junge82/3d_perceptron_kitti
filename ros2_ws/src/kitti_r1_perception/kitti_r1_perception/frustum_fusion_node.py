@@ -9,6 +9,9 @@ import message_filters
 import torch 
 import time  # High-resolution CPU timer.
 
+from kitti_r1_perception.calibration import K_KITTI, T_LIDAR_TO_CAM
+
+
 class FrustumFusionNode(Node):
     def __init__(self):
         super().__init__('frustum_fusion_node')
@@ -35,24 +38,9 @@ class FrustumFusionNode(Node):
             self.end_event = torch.cuda.Event(enable_timing=True)
 
         # --- KITTI calibration ---
-        # Camera intrinsic matrix.
-        K_kitti_np = np.array([
-            [721.5377, 0.0, 609.5593],
-            [0.0, 721.5377, 172.854],
-            [0.0, 0.0, 1.0]
-        ], dtype=np.float32)
-        self.K_tensor = torch.from_numpy(K_kitti_np).to(self.device)
-
-        # LiDAR-to-camera extrinsic transformation matrix.
-        T_lidar_to_cam_np = np.array([
-            [ 7.533745e-03, -9.999714e-01, -6.166020e-04, -4.069766e-03],
-            [ 1.480249e-02,  7.280733e-04, -9.998902e-01, -7.631618e-02],
-            [ 9.998621e-01,  7.523790e-03,  1.480755e-02, -2.717806e-01],
-            [ 0.000000e+00,  0.000000e+00,  0.000000e+00,  1.000000e+00]
-        ], dtype=np.float32)
-        
-        self.R_tensor = torch.from_numpy(T_lidar_to_cam_np[:3, :3]).to(self.device)
-        self.t_tensor = torch.from_numpy(T_lidar_to_cam_np[:3, 3]).to(self.device)
+        self.K_tensor = torch.from_numpy(K_KITTI).to(self.device)
+        self.R_tensor = torch.from_numpy(T_LIDAR_TO_CAM[:3, :3]).to(self.device)
+        self.t_tensor = torch.from_numpy(T_LIDAR_TO_CAM[:3, 3]).to(self.device)
 
         # Use reliable delivery and a bounded queue for synchronized inputs.
         optimized_qos = QoSProfile(
