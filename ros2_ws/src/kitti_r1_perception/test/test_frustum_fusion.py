@@ -13,6 +13,7 @@
 # limitations under the License.
 """Tests for the frustum-fusion callback."""
 
+import pytest
 from types import SimpleNamespace
 
 from kitti_r1_perception.calibration import (
@@ -20,6 +21,7 @@ from kitti_r1_perception.calibration import (
     T_LIDAR_TO_CAM,
 )
 from kitti_r1_perception.frustum_fusion_node import FrustumFusionNode
+
 from std_msgs.msg import Header
 import numpy as np
 import torch
@@ -113,7 +115,6 @@ def test_sync_callback_projects_and_publishes_matched_detection():
     assert result.class_id == '0'
     assert result.score == 0.9
 
-
 def test_sync_callback_does_not_publish_unmatched_detection():
     """Do not publish when the projected LiDAR point is outside the match radius."""
     node = _make_fusion_harness(match_radius=10.0)
@@ -122,3 +123,36 @@ def test_sync_callback_does_not_publish_unmatched_detection():
     node.sync_callback(camera_message, lidar_message)
 
     assert node.fused_pub.messages == []
+
+def test_extract_centers_valid_2d_and_3d():
+    """Verify 2D and 3D center extraction returns properly shaped float32 arrays."""
+    node = _make_fusion_harness()
+    camera_msg, lidar_msg = _make_messages((615.0, 178.0))
+
+    cam_pts = node.extract_centers(camera_msg, is_3d=False)
+    lidar_pts = node.extract_centers(lidar_msg, is_3d=True)
+
+    assert cam_pts.shape == (1, 2)
+    assert cam_pts.dtype == np.float32
+    np.testing.assert_allclose(cam_pts[0], [615.0, 178.0])
+
+    assert lidar_pts.shape == (1, 3)
+    assert lidar_pts.dtype == np.float32
+    np.testing.assert_allclose(lidar_pts[0], [10.0, 0.0, 0.0])
+
+def test_extract_centers_empty_detections():
+    """Verify empty detection arrays return (0, N) shaped arrays without crashing."""
+    empty_cam = Detection2DArray()
+    empty_lidar = Detection3DArray()
+
+    node = _make_fusion_harness()
+    assert node.extract_centers(empty_cam, is_3d=False).shape == (0, 2)
+    assert node.extract_centers(empty_lidar, is_3d=True).shape == (0, 3)
+
+def test_extract_centers_raises_on_missing_z():
+    """Verify ValueError is raised when 3D extraction is requested on 2D detections."""
+    camera_msg, _ = _make_messages((615.0, 178.0))
+    node = _make_fusion_harness()
+
+    with pytest.raises(ValueError, match="'z' attribute is missing"):
+        node.extract_centers(camera_msg, is_3d=True)

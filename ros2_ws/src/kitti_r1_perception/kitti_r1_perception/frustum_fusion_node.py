@@ -78,6 +78,30 @@ class FrustumFusionNode(Node):
         self.ts.registerCallback(self.sync_callback)
         self.get_logger().info("Vectorized CUDA Frustum Fusion Engine Activated Successfully.")
 
+    def extract_centers(self, msg, is_3d: bool = False) -> np.ndarray:
+        # Extracts detection bounding box centers into an (N, 2) or (N, 3) NumPy array."""
+        cols = 3 if is_3d else 2
+        if not msg.detections:
+            return np.empty((0, cols), dtype=np.float32)
+
+        pts = [self.parse_single_center(det.bbox.center, is_3d) for det in msg.detections]
+        return np.array(pts, dtype=np.float32)
+
+    def parse_single_center(self, center, is_3d: bool) -> list[float]:
+        # Validates and extracts coordinates from a single bounding box center."""
+        # Support centers represented as either a nested position or direct coordinates.
+        src = center.position if hasattr(center, 'position') else center
+
+        if not (hasattr(src, 'x') and hasattr(src, 'y')):
+            raise ValueError(f"Unknown center schema attributes: {dir(center)}")
+
+        if is_3d:
+            if not hasattr(src, 'z'):
+                raise ValueError(f"3D coordinates requested, but 'z' attribute is missing: {dir(center)}")
+            return [float(src.x), float(src.y), float(src.z)]
+
+        return [float(src.x), float(src.y)]
+
     def sync_callback(self, camera_msg, lidar_msg):
         # --- Callback timing and input validation ---
         callback_start_time = time.perf_counter()        
@@ -104,29 +128,9 @@ class FrustumFusionNode(Node):
 
         # --- Extract detection coordinates ---
         try:
-            # Extract 3D LiDAR cluster centers.
-            lidar_pts_np = np.array([
-                [float(d.bbox.center.position.x), float(d.bbox.center.position.y), float(d.bbox.center.position.z)]
-                for d in lidar_msg.detections
-            ], dtype=np.float32)
-            
-            # Extract 2D camera detection centers across supported message layouts.
-            camera_pts = []
-            for c in camera_msg.detections:
-                # Handle centers represented as either a nested position or direct coordinates.
-                if hasattr(c.bbox.center, 'position'):
-                    cx = float(c.bbox.center.position.x)
-                    cy = float(c.bbox.center.position.y)
-                elif hasattr(c.bbox.center, 'x'):
-                    cx = float(c.bbox.center.x)
-                    cy = float(c.bbox.center.y)
-                else:
-                    # Report unsupported message layouts.
-                    self.get_logger().error(f"Unknown center schema attributes: {dir(c.bbox.center)}")
-                    return
-                camera_pts.append([cx, cy])
-                
-            camera_pts_np = np.array(camera_pts, dtype=np.float32)
+            lidar_pts_np = self.extract_centers(lidar_msg, is_3d=True)
+            camera_pts_np = self.extract_centers(camera_msg, is_3d=False)
+
             
         except Exception as e:
             self.get_logger().error(f"🚨 Structure parsing exception: {str(e)}")
@@ -219,6 +223,29 @@ class FrustumFusionNode(Node):
         fused_detections = Detection3DArray()
         fused_detections.header = lidar_msg.header
 
+        
+        self.fuse_lidar_and_camera_detections(camera_msg, lidar_msg, min_dists_cpu, best_2d_indices_cpu, valid_indices_cpu, fused_detections)
+
+        # Publish only when at least one detection was fused.
+        if len(fused_detections.detections) > 0:
+            self.fused_pub.publish(fused_detections)
+
+        lidar_stamp_ns = lidar_msg.header.stamp.sec * 1_000_000_000 + lidar_msg.header.stamp.nanosec
+        camera_stamp_ns = camera_msg.header.stamp.sec * 1_000_000_000 + camera_msg.header.stamp.nanosec
+        sync_slop_ms = abs(lidar_stamp_ns - camera_stamp_ns) / 1e6
+        callback_time_ms = (time.perf_counter() - callback_start_time) * 1000.0
+
+        self.get_logger().info(
+            f"\n--- Frustum Fusion Callback ---\n"
+            f"Input clusters (LiDAR / camera): {num_3d} / {num_2d}\n"
+            f"Fused detections              : {len(fused_detections.detections)}\n"
+            f"Timestamp difference          : {sync_slop_ms:.2f} ms\n"
+            f"Compute interval              : {compute_time_ms:.2f} ms\n"
+            f"Total callback                : {callback_time_ms:.2f} ms\n"
+            f"--------------------------------"
+        )
+
+    def fuse_lidar_and_camera_detections(self, camera_msg, lidar_msg, min_dists_cpu, best_2d_indices_cpu, valid_indices_cpu, fused_detections):
         for i, lidar_idx in enumerate(valid_indices_cpu):
             det_3d = lidar_msg.detections[lidar_idx]
 
@@ -266,25 +293,6 @@ class FrustumFusionNode(Node):
 
                 # Add the fused detection to the output message.
                 fused_detections.detections.append(det_3d)
-
-        # Publish only when at least one detection was fused.
-        if len(fused_detections.detections) > 0:
-            self.fused_pub.publish(fused_detections)
-
-        lidar_stamp_ns = lidar_msg.header.stamp.sec * 1_000_000_000 + lidar_msg.header.stamp.nanosec
-        camera_stamp_ns = camera_msg.header.stamp.sec * 1_000_000_000 + camera_msg.header.stamp.nanosec
-        sync_slop_ms = abs(lidar_stamp_ns - camera_stamp_ns) / 1e6
-        callback_time_ms = (time.perf_counter() - callback_start_time) * 1000.0
-
-        self.get_logger().info(
-            f"\n--- Frustum Fusion Callback ---\n"
-            f"Input clusters (LiDAR / camera): {num_3d} / {num_2d}\n"
-            f"Fused detections              : {len(fused_detections.detections)}\n"
-            f"Timestamp difference          : {sync_slop_ms:.2f} ms\n"
-            f"Compute interval              : {compute_time_ms:.2f} ms\n"
-            f"Total callback                : {callback_time_ms:.2f} ms\n"
-            f"--------------------------------"
-        )
 
     def box_class_det(self, sx, sy, horizontal_footprint_area, aspect_ratio, inst_hypothesis, camera_class, score):
         # --- Geometry-based class correction ---
