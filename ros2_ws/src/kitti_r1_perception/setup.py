@@ -19,15 +19,15 @@ data_files_list += [
 ]
 setup(
     name=package_name,
-    version='0.0.1',
+    version='0.1.0',
     packages=find_packages(exclude=['test']),
     data_files=data_files_list,
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='GJung',
-    maintainer_email='junge82@outlook.hu',
-    description='Modular 3D Perception Pipeline',
-    license='TODO: License declaration',
+    maintainer='Gergely Jung',
+    maintainer_email='jung.gergely@outlook.hu',
+    description='Modular 3D LiDAR-Camera Perception Pipeline for KITTI Dataset',
+    license='MIT',
     entry_points={
         'console_scripts': [
             'lidar_cluster_node = kitti_r1_perception.lidar_cluster_node:main',

@@ -2,10 +2,10 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>kitti_r1_description</name>
-  <version>0.0.1</version>
-  <description>Display layout for Kitti</description>
-  <maintainer email="junge82@outlook.hu">GJung</maintainer>
-  <license>TODO: License declaration</license>
+  <version>0.1.0</version>
+  <description>3D LiDAR-Camera Perception Pipeline for KITTI Dataset</description>
+  <maintainer email="jung.gergely@outlook.hu">Gergely Jung</maintainer>
+  <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
